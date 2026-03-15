@@ -1,0 +1,493 @@
+import { fileURLToPath } from "node:url";
+
+import { serve, type ServerType } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { Hono, type Context } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+
+import {
+  createDiet,
+  createExercise,
+  createGoal,
+  createMatch,
+  createPractice,
+  deleteDiet,
+  deleteExercise,
+  deleteGoal,
+  deleteMatch,
+  deletePractice,
+  ensureUserProfile,
+  getEntryById,
+  listHistory,
+  toViewer,
+  updateDiet,
+  updateExercise,
+  updateGoal,
+  updateMatch,
+  updatePractice,
+  updateTennisProfile,
+  type Viewer,
+} from "./lib/app.js";
+import { authConfigured, env } from "./env.js";
+import { authJson, getAuthSession, proxyAuthRequest, setAuthCookies } from "./lib/auth.js";
+import {
+  authPanel,
+  entryDetail,
+  entryForm,
+  entryLauncher,
+  historySection,
+  page,
+  profileForm,
+} from "./templates.js";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type AppVariables = { viewer: Viewer };
+type AppContext = Context<{ Variables: AppVariables }>;
+
+const VALID_KINDS = ["goal", "practice", "match", "diet", "exercise"] as const;
+
+function isValidKind(value: string): value is (typeof VALID_KINDS)[number] {
+  return (VALID_KINDS as readonly string[]).includes(value);
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
+const app = new Hono<{ Variables: AppVariables }>();
+
+// Static assets
+app.use("/app.css", serveStatic({ path: "./public/app.css" }));
+app.use("/app.js", serveStatic({ path: "./public/app.js" }));
+
+// ---------------------------------------------------------------------------
+// Viewer middleware
+// ---------------------------------------------------------------------------
+
+app.use("*", async (c, next) => {
+  if (!authConfigured) {
+    c.set("viewer", toViewer(null, null));
+    await next();
+    return;
+  }
+
+  const session = await getAuthSession(c.req.raw.headers);
+  const profile = session?.user ? await ensureUserProfile(session.user) : null;
+  c.set("viewer", toViewer(session?.user ?? null, profile));
+  await next();
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function requireAuth(viewer: Viewer): asserts viewer is Viewer & { authUser: NonNullable<Viewer["authUser"]> } {
+  if (viewer.role === "guest" || !viewer.authUser) {
+    throw new Error("Sign in required.");
+  }
+}
+
+function setFlash(c: AppContext, message: string) {
+  setCookie(c, "flash", message, { path: "/", httpOnly: true, sameSite: "Lax" });
+}
+
+function setFlashHeader(headers: Headers, message: string) {
+  headers.append("set-cookie", `flash=${encodeURIComponent(message)}; Path=/; HttpOnly; SameSite=Lax`);
+}
+
+function getFlash(c: AppContext) {
+  const flash = getCookie(c, "flash");
+  if (flash) {
+    deleteCookie(c, "flash", { path: "/" });
+  }
+  return flash;
+}
+
+function extractAuthMessage(responseText: string) {
+  try {
+    const parsed = JSON.parse(responseText) as { message?: string; code?: string };
+    if (parsed?.message) {
+      return parsed.code ? `${parsed.message} (${parsed.code})` : parsed.message;
+    }
+  } catch {
+    // ignore non-JSON
+  }
+  return "";
+}
+
+function clearAuthCookies(headers: Headers) {
+  const expired = "Max-Age=0; Path=/; HttpOnly; Secure; SameSite=None; Partitioned";
+  headers.append("set-cookie", `__Secure-neon-auth.session_token=; ${expired}`);
+  headers.append("set-cookie", `__Secure-neon-auth.session_challenge=; ${expired}`);
+}
+
+function depluralize(plural: string): string {
+  const map: Record<string, string> = { goals: "goal", practices: "practice", matches: "match", diets: "diet", exercises: "exercise" };
+  return map[plural] ?? plural;
+}
+
+// Dispatches create/update/delete based on kind
+const creators: Record<string, (userId: string, body: Record<string, unknown>) => Promise<void>> = {
+  goal: createGoal,
+  practice: createPractice,
+  match: createMatch,
+  diet: createDiet,
+  exercise: createExercise,
+};
+
+const updaters: Record<string, (userId: string, id: string, body: Record<string, unknown>) => Promise<unknown>> = {
+  goal: updateGoal,
+  practice: updatePractice,
+  match: updateMatch,
+  diet: updateDiet,
+  exercise: updateExercise,
+};
+
+const deleters: Record<string, (userId: string, id: string) => Promise<void>> = {
+  goal: deleteGoal,
+  practice: deletePractice,
+  match: deleteMatch,
+  diet: deleteDiet,
+  exercise: deleteExercise,
+};
+
+// ---------------------------------------------------------------------------
+// Page routes — full HTML pages
+// ---------------------------------------------------------------------------
+
+// Home page
+app.get("/", async (c) => {
+  const viewer = c.get("viewer");
+  c.header("Cache-Control", "no-store");
+
+  const flash = getFlash(c);
+  let bodyContent: string;
+  let routeName: "home" | "demo" = "home";
+  if (viewer.role === "guest") {
+    // Guest users get demo mode with localStorage data on the home page
+    routeName = "demo";
+    bodyContent = authPanel(viewer, !!flash);
+  } else if (viewer.profileRequired) {
+    bodyContent = profileForm(viewer);
+  } else {
+    const { items, total } = await listHistory(viewer.authUser!.id, "all", 15, 0);
+    bodyContent = entryLauncher() + historySection(items, total, "all");
+  }
+
+  return c.html(page({ viewer, route: routeName, flash, bodyContent }));
+});
+
+// Profile page
+app.get("/profile", async (c) => {
+  const viewer = c.get("viewer");
+  if (viewer.role === "guest") {
+    setFlash(c, "Sign in first.");
+    return c.redirect("/");
+  }
+  c.header("Cache-Control", "no-store");
+
+  const bodyContent = authPanel(viewer) + profileForm(viewer);
+  return c.html(page({ viewer, route: "profile", flash: getFlash(c), bodyContent }));
+});
+
+// View entry detail:  GET /view/practice/abc123
+app.get("/view/:kind/:id", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+  const kind = c.req.param("kind");
+  const id = c.req.param("id");
+
+  if (!isValidKind(kind)) {
+    setFlash(c, "Unknown entry type.");
+    return c.redirect("/");
+  }
+
+  const item = await getEntryById(viewer.authUser.id, kind, id);
+  if (!item) {
+    setFlash(c, "Entry not found.");
+    return c.redirect("/");
+  }
+
+  c.header("Cache-Control", "no-store");
+  return c.html(page({ viewer, route: "view", flash: getFlash(c), bodyContent: entryDetail(item) }));
+});
+
+// Edit entry form:  GET /edit/match/abc123
+app.get("/edit/:kind/:id", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+  const kind = c.req.param("kind");
+  const id = c.req.param("id");
+
+  if (!isValidKind(kind)) {
+    setFlash(c, "Unknown entry type.");
+    return c.redirect("/");
+  }
+
+  const item = await getEntryById(viewer.authUser.id, kind, id);
+  if (!item) {
+    setFlash(c, "Entry not found.");
+    return c.redirect("/");
+  }
+
+  c.header("Cache-Control", "no-store");
+  return c.html(page({ viewer, route: "edit", flash: getFlash(c), bodyContent: entryForm(kind, item) }));
+});
+
+// New entry form:  GET /new/goal
+app.get("/new/:kind", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+  const kind = c.req.param("kind");
+
+  if (!isValidKind(kind)) {
+    setFlash(c, "Unknown entry type.");
+    return c.redirect("/");
+  }
+
+  c.header("Cache-Control", "no-store");
+  return c.html(page({ viewer, route: "new", flash: getFlash(c), bodyContent: entryForm(kind) }));
+});
+
+// ---------------------------------------------------------------------------
+// Demo routes — full page shell, JS handles everything client-side
+// ---------------------------------------------------------------------------
+
+app.get("/demo", async (c) => {
+  const viewer = c.get("viewer");
+  c.header("Cache-Control", "no-store");
+  return c.html(page({ viewer, route: "demo", flash: getFlash(c), bodyContent: "" }));
+});
+
+app.get("/demo/view/:kind/:id", async (c) => {
+  const viewer = c.get("viewer");
+  c.header("Cache-Control", "no-store");
+  return c.html(page({ viewer, route: "demo", flash: getFlash(c), bodyContent: "" }));
+});
+
+app.get("/demo/edit/:kind/:id", async (c) => {
+  const viewer = c.get("viewer");
+  c.header("Cache-Control", "no-store");
+  return c.html(page({ viewer, route: "demo", flash: getFlash(c), bodyContent: "" }));
+});
+
+app.get("/demo/new/:kind", async (c) => {
+  const viewer = c.get("viewer");
+  c.header("Cache-Control", "no-store");
+  return c.html(page({ viewer, route: "demo", flash: getFlash(c), bodyContent: "" }));
+});
+
+// ---------------------------------------------------------------------------
+// HTMX API — return HTML fragments
+// ---------------------------------------------------------------------------
+
+// History feed (HTMX swap target: #feed)
+app.get("/api/history", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+
+  const kind = c.req.query("kind") || "all";
+  const limit = Math.min(Number(c.req.query("limit") || "15"), 50);
+  const { items, total } = await listHistory(viewer.authUser.id, kind, limit, 0);
+  return c.html(historySection(items, total, kind));
+});
+
+// Create entry:  POST /api/goals
+app.post("/api/:kind{goals|practices|matches|diets|exercises}", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+
+  const kind = depluralize(c.req.param("kind"));
+  const create = creators[kind];
+  if (!create) { throw new Error("Unknown entry type."); }
+
+  const body = await c.req.parseBody();
+  await create(viewer.authUser.id, body as Record<string, unknown>);
+
+  // After create, return updated feed
+  const { items, total } = await listHistory(viewer.authUser.id, "all", 15, 0);
+  return c.html(entryLauncher() + historySection(items, total, "all"));
+});
+
+// Update entry:  PATCH /api/goals/:id
+app.patch("/api/:kind{goals|practices|matches|diets|exercises}/:id", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+
+  const plural = c.req.param("kind");
+  const id = c.req.param("id");
+  const kind = depluralize(plural);
+  const update = updaters[kind];
+  if (!update) { throw new Error("Unknown entry type."); }
+
+  const body = await c.req.parseBody();
+  await update(viewer.authUser.id, id, body as Record<string, unknown>);
+
+  // Return updated entry detail
+  const item = await getEntryById(viewer.authUser.id, kind, id);
+  if (!item) {
+    const { items, total } = await listHistory(viewer.authUser.id, "all", 15, 0);
+    return c.html(entryLauncher() + historySection(items, total, "all"));
+  }
+  return c.html(entryDetail(item));
+});
+
+// Delete entry:  DELETE /api/goals/:id
+app.delete("/api/:kind{goals|practices|matches|diets|exercises}/:id", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+
+  const plural = c.req.param("kind");
+  const id = c.req.param("id");
+  const kind = depluralize(plural);
+  const del = deleters[kind];
+  if (!del) { throw new Error("Unknown entry type."); }
+
+  await del(viewer.authUser.id, id);
+
+  // Return redirect header for full-page navigation after delete
+  c.header("HX-Redirect", "/");
+  return c.html("");
+});
+
+// Profile update:  POST /api/profile
+app.post("/api/profile", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+
+  const body = await c.req.parseBody();
+  const profile = await updateTennisProfile(viewer.authUser.id, body as Record<string, unknown>);
+  const nextViewer = toViewer(viewer.authUser, profile);
+
+  // If profile was just completed and we're on a profile-required page, redirect home
+  if (!nextViewer.profileRequired && viewer.profileRequired) {
+    c.header("HX-Redirect", "/");
+    return c.html("");
+  }
+
+  return c.html(profileForm(nextViewer));
+});
+
+// ---------------------------------------------------------------------------
+// Auth routes
+// ---------------------------------------------------------------------------
+
+app.on(["GET", "POST", "OPTIONS"], "/api/auth/*", async (c) => {
+  if (!authConfigured) {
+    return c.json({ error: "Neon Auth is not configured." }, 503);
+  }
+  const path = c.req.path.replace(/^\/api\/auth\//, "");
+  return proxyAuthRequest(c.req.raw, path);
+});
+
+app.post("/auth/sign-up", async (c) => {
+  if (!authConfigured) {
+    setFlash(c, "Auth is not configured. Set NEON_AUTH_BASE_URL and NEON_AUTH_COOKIE_SECRET.");
+    return c.redirect("/");
+  }
+
+  const body = await c.req.parseBody();
+  const response = await authJson(c.req.raw, "/sign-up/email", {
+    method: "POST",
+    body: JSON.stringify({
+      name: String(body.name ?? ""),
+      email: String(body.email ?? ""),
+      password: String(body.password ?? ""),
+      callbackURL: `${env.APP_URL}/auth/callback?redirectTo=/`,
+    }),
+  });
+
+  const headers = new Headers({ location: "/" });
+  setAuthCookies(response, headers);
+  const responseText = await response.text();
+  const responseMessage = extractAuthMessage(responseText);
+
+  if (!response.ok) {
+    setFlashHeader(headers, responseMessage || "Sign-up failed. Check your credentials.");
+  } else {
+    setFlashHeader(headers, "Account created.");
+  }
+
+  return new Response(null, { status: 303, headers });
+});
+
+app.post("/auth/sign-in", async (c) => {
+  if (!authConfigured) {
+    setFlash(c, "Auth is not configured.");
+    return c.redirect("/");
+  }
+
+  const body = await c.req.parseBody();
+  const response = await authJson(c.req.raw, "/sign-in/email", {
+    method: "POST",
+    body: JSON.stringify({
+      email: String(body.email ?? ""),
+      password: String(body.password ?? ""),
+    }),
+  });
+
+  const headers = new Headers({ location: "/" });
+  setAuthCookies(response, headers);
+  const responseText = await response.text();
+  const responseMessage = extractAuthMessage(responseText);
+
+  if (!response.ok) {
+    setFlashHeader(headers, responseMessage || "Sign-in failed. Check your credentials.");
+  }
+
+  return new Response(null, { status: 303, headers });
+});
+
+app.post("/auth/sign-out", async (c) => {
+  if (authConfigured) {
+    const response = await authJson(c.req.raw, "/sign-out", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const headers = new Headers({ location: "/" });
+    setAuthCookies(response, headers);
+    clearAuthCookies(headers);
+    return new Response(null, { status: 303, headers });
+  }
+  return c.redirect("/");
+});
+
+app.get("/auth/callback", async (c) => {
+  return c.redirect(String(c.req.query("redirectTo") ?? "/"));
+});
+
+// ---------------------------------------------------------------------------
+// Error handler
+// ---------------------------------------------------------------------------
+
+app.onError((error, c) => {
+  const message = error instanceof Error ? error.message : "Unexpected server error";
+  if (c.req.header("hx-request")) {
+    return c.html(`<div class="flash">${message}</div>`, 500);
+  }
+  setFlash(c as AppContext, message);
+  return c.redirect("/");
+});
+
+// ---------------------------------------------------------------------------
+// Export & serve
+// ---------------------------------------------------------------------------
+
+export default app;
+
+const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+
+let server: ServerType | undefined;
+
+if (isDirectRun && !process.env.VERCEL) {
+  server = serve({
+    fetch: app.fetch,
+    port: env.PORT,
+  });
+  console.log(`Tennis Zero (Six Alpha) running on http://localhost:${env.PORT}`);
+}
+
+export { server };
