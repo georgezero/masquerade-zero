@@ -1,7 +1,7 @@
 import type { Viewer, HistoryItem, AppProfile } from "./lib/app.js";
 import { escapeHtml, formatDateTime } from "./lib/html.js";
 
-const ASSET_VERSION = "20260316-six-alpha-022";
+const ASSET_VERSION = "20260316-six-alpha-023";
 
 function avatarInitials(viewer: Viewer) {
   const first = viewer.profile?.firstName?.trim() || "";
@@ -341,7 +341,7 @@ export function authPanel(viewer: Viewer, hasFlash = false) {
         <div class="min-w-0">
           <p class="text-xs uppercase tracking-[0.28em] text-cyan-300/80">Access</p>
           <h2 id="auth-title" class="mt-1 text-xl font-bold tracking-tight text-white">Sign In</h2>
-          <p id="auth-subtitle" class="mt-1 text-sm text-slate-300">Create an account or sign in</p>
+          <p id="auth-subtitle" class="mt-1 min-h-5 text-sm text-slate-300"></p>
         </div>
         <div class="flex shrink-0 items-start justify-end gap-2">
           <button id="auth-cancel-btn" type="button" class="${hasFlash ? "" : "hidden "}rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Cancel</button>

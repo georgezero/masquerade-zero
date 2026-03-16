@@ -195,7 +195,6 @@ function initAuthToggle() {
       const modeInput = document.getElementById("auth-mode-input");
       const form = document.getElementById("auth-form");
       const title = document.getElementById("auth-title");
-      const subtitle = document.getElementById("auth-subtitle");
 
       if (signinBtn) {
         signinBtn.className = isSignUp
@@ -212,7 +211,6 @@ function initAuthToggle() {
       if (modeInput instanceof HTMLInputElement) modeInput.value = isSignUp ? "signup" : "signin";
       if (form instanceof HTMLFormElement) form.action = isSignUp ? "/auth/sign-up" : "/auth/sign-in";
       if (title) title.textContent = isSignUp ? "Create Account" : "Sign In";
-      if (subtitle) subtitle.textContent = isSignUp ? "Create a new account" : "Create an account or sign in";
     }
   });
 }
@@ -817,5 +815,9 @@ window.addEventListener("DOMContentLoaded", () => {
     initHtmxHandlers();
     initAuthToggle();
     bindAvatarPreview();
+    if (window.location.pathname === "/sign-in") {
+      const signinBtn = document.getElementById("signin-open");
+      if (signinBtn) signinBtn.classList.add("hidden");
+    }
   }
 });
