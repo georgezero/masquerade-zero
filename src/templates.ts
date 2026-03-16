@@ -1,7 +1,7 @@
 import type { Viewer, HistoryItem, AppProfile } from "./lib/app.js";
 import { escapeHtml, formatDateTime } from "./lib/html.js";
 
-const ASSET_VERSION = "20260315-six-alpha-009";
+const ASSET_VERSION = "20260316-six-alpha-010";
 
 function avatarInitials(viewer: Viewer) {
   const first = viewer.profile?.firstName?.trim() || "";
@@ -306,7 +306,7 @@ export function authPanel(viewer: Viewer, hasFlash = false) {
       : "";
 
     return `
-      <section class="glass rounded-2xl border border-white/10 p-4 shadow-neon sm:p-5" id="auth-panel">
+      <section class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-white/10 p-4 shadow-neon sm:max-w-3xl sm:p-5" id="auth-panel">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p class="text-xs uppercase tracking-[0.28em] text-cyan-300/80">Access</p>
@@ -325,7 +325,7 @@ export function authPanel(viewer: Viewer, hasFlash = false) {
   }
 
   return `
-    <section class="glass rounded-2xl border border-white/10 p-4 shadow-neon sm:p-5" id="auth-panel">
+    <section class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-white/10 p-4 shadow-neon sm:max-w-3xl sm:p-5" id="auth-panel">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p class="text-xs uppercase tracking-[0.28em] text-cyan-300/80">Access</p>
