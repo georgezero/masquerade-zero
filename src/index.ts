@@ -208,7 +208,7 @@ app.get("/sign-in", async (c) => {
   if (viewer.role !== "guest") {
     return c.redirect("/");
   }
-  return c.html(page({ viewer, route: "home", flash: getFlash(c), bodyContent: authPanel(viewer, true) }));
+  return c.html(page({ viewer, route: "sign-in", flash: getFlash(c), bodyContent: authPanel(viewer, true) }));
 });
 
 // Profile page
