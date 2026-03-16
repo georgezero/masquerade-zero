@@ -331,7 +331,8 @@ node scripts/migrate.mjs --mark-applied 0001_initial.sql
 | `DATABASE_URL` | No | - | Neon PostgreSQL connection string |
 | `NEON_AUTH_BASE_URL` | No | - | Neon Auth service URL |
 | `NEON_AUTH_COOKIE_SECRET` | No | - | Cookie signing secret for auth |
-| `INGEST_API_KEY` | No* | - | Required only for `POST /api/ingest`; accepted via `Authorization: Bearer` or `x-api-key` |
+| `INGEST_API_KEY` | No* | - | Single-key fallback for ingest auth (full ingest scopes) |
+| `INGEST_API_KEYS_JSON` | No* | - | Preferred multi-key JSON config with per-key scopes and optional `allowedUserIds` |
 | `INGEST_RATE_LIMIT_WINDOW_MS` | No | `60000` | Fixed-window rate-limit window in milliseconds |
 | `INGEST_RATE_LIMIT_MAX` | No | `60` | Max ingest requests per window per API key + userId |
 | `INGEST_IDEMPOTENCY_TTL_MS` | No | `3600000` | In-memory idempotency cache TTL (milliseconds) |
@@ -341,7 +342,7 @@ node scripts/migrate.mjs --mark-applied 0001_initial.sql
 All variables are optional. The app degrades gracefully:
 - **No DATABASE_URL**: DB operations return null/empty, demo mode works
 - **No NEON_AUTH_***: Auth endpoints return 503, guests see demo mode
-- **No INGEST_API_KEY**: `/api/ingest` returns 503
+- **No INGEST_API_KEY and no INGEST_API_KEYS_JSON**: `/api/ingest` returns 503
 
 Example API key format:
 
@@ -358,6 +359,29 @@ openssl rand -hex 32
 `INGEST_API_KEY` vs `INGEST_KEY`:
 - `INGEST_API_KEY` is the server-side env var your app reads.
 - `INGEST_KEY` is only a shell variable used by the smoke-test scripts as the client credential.
+
+Preferred scoped key config example (`INGEST_API_KEYS_JSON`):
+
+```json
+[
+  {
+    "id": "local-dev",
+    "key": "tz6_ingest_local_test_1234567890abcdef",
+    "scopes": ["ingest:write", "ingest:dryrun"]
+  },
+  {
+    "id": "preview-readonly",
+    "key": "tz6_ingest_preview_abcdef0123456789",
+    "scopes": ["ingest:dryrun"],
+    "allowedUserIds": ["smoke-user", "preview-user"]
+  }
+]
+```
+
+Scope behavior:
+- `ingest:write`: required for non-`dryRun` structured writes.
+- `ingest:dryrun`: allows `dryRun` structured requests and freeform preview mode.
+- Requests outside allowed scope or disallowed `userId` return `403`.
 
 If you run the app via the user `systemd` service on this machine, edit:
 
@@ -433,6 +457,7 @@ Status behavior:
 - `200`: parsed/validated (and persisted when `dryRun` is false)
 - `400`: invalid JSON body or invalid request contract
 - `401`: API key missing/invalid
+- `403`: key is valid but missing scope or disallowed `userId`
 - `409`: idempotency conflict or request already in flight
 - `413`: request body too large
 - `429`: rate limit exceeded (`Retry-After` header set)

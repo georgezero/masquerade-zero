@@ -28,7 +28,7 @@ import { IngestService } from "./ingest/service.js";
 import { PostgresIngestRuntime } from "./ingest/runtime.js";
 import { ingestApiRequestSchema } from "./ingest/schemas.js";
 import type { StructuredIngestInput } from "./ingest/types.js";
-import { authConfigured, env, ingestApiConfigured } from "./env.js";
+import { authConfigured, env, ingestApiConfigured, ingestApiKeys, type IngestApiKeyRecord } from "./env.js";
 import { authJson, getAuthSession, proxyAuthRequest, setAuthCookies } from "./lib/auth.js";
 import {
   authPanel,
@@ -168,6 +168,17 @@ function apiKeysMatch(expected: string, actual: string | null): boolean {
     return false;
   }
   return timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+function resolveIngestApiKey(actual: string | null): IngestApiKeyRecord | null {
+  if (!actual) {
+    return null;
+  }
+  return ingestApiKeys.find((entry) => apiKeysMatch(entry.key, actual)) ?? null;
+}
+
+function keyHasAnyScope(key: IngestApiKeyRecord, scopes: Array<"ingest:write" | "ingest:dryrun">): boolean {
+  return scopes.some((scope) => key.scopes.includes(scope));
 }
 
 // Dispatches update/delete based on kind
@@ -359,12 +370,13 @@ app.post("/api/ingest", async (c) => {
     return c.json({ error: "Request body too large." }, 413);
   }
 
-  if (!ingestApiConfigured || !env.INGEST_API_KEY) {
+  if (!ingestApiConfigured) {
     return c.json({ error: "Ingest API is not configured." }, 503);
   }
 
   const providedApiKey = ingestApiAuthKey(c as AppContext);
-  if (!apiKeysMatch(env.INGEST_API_KEY, providedApiKey)) {
+  const resolvedApiKey = resolveIngestApiKey(providedApiKey);
+  if (!resolvedApiKey) {
     return c.json({ error: "Unauthorized." }, 401);
   }
 
@@ -382,8 +394,24 @@ app.post("/api/ingest", async (c) => {
   }
 
   const request = parsed.data;
+  if (Array.isArray(resolvedApiKey.allowedUserIds) && !resolvedApiKey.allowedUserIds.includes(request.userId)) {
+    return c.json({ error: "Forbidden for requested userId." }, 403);
+  }
+
+  if (request.mode === "structured") {
+    const needsWrite = !request.dryRun;
+    const permitted = needsWrite
+      ? keyHasAnyScope(resolvedApiKey, ["ingest:write"])
+      : keyHasAnyScope(resolvedApiKey, ["ingest:dryrun", "ingest:write"]);
+    if (!permitted) {
+      return c.json({ error: needsWrite ? "Missing scope: ingest:write." : "Missing scope: ingest:dryrun." }, 403);
+    }
+  } else if (!keyHasAnyScope(resolvedApiKey, ["ingest:dryrun", "ingest:write"])) {
+    return c.json({ error: "Missing scope: ingest:dryrun." }, 403);
+  }
+
   const requestFingerprint = createHash("sha256").update(JSON.stringify(request)).digest("hex");
-  const clientKey = [providedApiKey, request.userId].filter(Boolean).join(":");
+  const clientKey = [resolvedApiKey.id, request.userId].filter(Boolean).join(":");
   const idempotencyCompositeKey = request.idempotencyKey
     ? `${request.userId}:${request.idempotencyKey}`
     : null;
