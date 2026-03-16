@@ -299,6 +299,7 @@ npm start          # Run compiled server
 npm run check      # Type-check without emitting
 npm run test       # Unit tests
 npm run test:ingest-api  # Local integration checks for /api/ingest (401/200/409/429)
+npm run test:ingest-api:db  # DB-backed idempotency checks (replay + expiry)
 ```
 
 Smoke scripts:
