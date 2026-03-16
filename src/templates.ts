@@ -1,7 +1,7 @@
 import type { Viewer, HistoryItem, AppProfile } from "./lib/app.js";
 import { escapeHtml, formatDateTime } from "./lib/html.js";
 
-const ASSET_VERSION = "20260316-six-alpha-016";
+const ASSET_VERSION = "20260316-six-alpha-017";
 
 function avatarInitials(viewer: Viewer) {
   const first = viewer.profile?.firstName?.trim() || "";

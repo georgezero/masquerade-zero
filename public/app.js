@@ -169,6 +169,10 @@ function initAuthToggle() {
       const shell = document.getElementById("auth-form-shell");
       const openBtn = document.getElementById("signin-open");
       const demoContent = document.getElementById("demo-content");
+      if (!demoContent) {
+        window.location.href = "/";
+        return;
+      }
       if (shell) shell.classList.add("hidden");
       if (demoContent) demoContent.classList.remove("hidden");
       cancelOpen.classList.add("hidden");
