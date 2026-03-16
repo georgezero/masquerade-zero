@@ -22,8 +22,11 @@ function avatarInitials(viewer: Viewer) {
   return "P";
 }
 
-function headerActions(viewer: Viewer) {
+function headerActions(viewer: Viewer, route: "home" | "profile" | "view" | "edit" | "new" | "demo" | "sign-in") {
   if (viewer.role === "guest") {
+    if (route === "sign-in") {
+      return "";
+    }
     return `
       <div class="flex items-center gap-2">
         <a id="signin-open" href="/sign-in" class="shrink-0 whitespace-nowrap rounded-xl border border-cyan-200/80 bg-cyan-400/25 px-3 py-1.5 text-xs font-bold text-cyan-50 shadow-[0_0_18px_rgba(34,211,238,0.35)] transition hover:bg-cyan-400/35 sm:px-4 sm:py-2 sm:text-sm">Sign in</a>
@@ -475,7 +478,7 @@ export function profileForm(viewer: Viewer) {
 
 export function page(params: {
   viewer: Viewer;
-  route: "home" | "profile" | "view" | "edit" | "new" | "demo";
+  route: "home" | "profile" | "view" | "edit" | "new" | "demo" | "sign-in";
   flash?: string;
   bodyContent: string;
 }) {
@@ -547,7 +550,7 @@ export function page(params: {
     </div>
 
     <header class="topbar fixed inset-x-0 top-0 z-50 border-b border-white/10 bg-slate-950/85 backdrop-blur">
-      <div class="mx-auto flex w-full max-w-[22rem] items-start justify-between gap-2 px-3 py-4 sm:max-w-6xl sm:gap-4 sm:px-6 sm:py-6">
+      <div class="mx-auto flex w-full max-w-6xl items-start justify-between gap-2 px-3 py-4 sm:gap-4 sm:px-6 sm:py-6">
         <div class="flex min-w-0 items-start gap-2 sm:gap-3">
           <a class="brand-lockup shrink-0" href="/">
             <div class="brand-mark">6A</div>
@@ -560,7 +563,7 @@ export function page(params: {
             <p class="mt-1 max-w-2xl truncate text-sm text-slate-300 sm:text-base">Zero in on your tennis</p>
           </div>
         </div>
-        ${headerActions(viewer)}
+        ${headerActions(viewer, route)}
       </div>
     </header>
 
