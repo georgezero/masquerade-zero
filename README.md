@@ -27,7 +27,8 @@ Combines the feature set of [Tennis Zero](https://github.com/georgezero/tennis-z
 ## Features
 
 - **5 entry types** with full CRUD: Goals, Practices, Matches, Diets, Exercises
-- **HTMX-powered interactions** for authenticated users (server renders HTML fragments, no JSON APIs)
+- **HTMX-powered interactions** for authenticated users (server renders HTML fragments)
+- **Server-to-server JSON ingest API** at `POST /api/ingest` (API key protected)
 - **Demo mode** with localStorage for logged-out guests (vanilla JS SPA, no server required)
 - **Profile completion gate** requiring first name, last name, and sex before access
 - **Detailed player profiles** with UTR/NTRP ratings, dominant hand, play style, preferred surfaces, and more
@@ -173,6 +174,12 @@ All entry tables are keyed by `userId` for multi-tenancy. UUID primary keys with
 | DELETE | `/api/{goals\|practices\|matches\|diets\|exercises}/:id` | HX-Redirect to `/` |
 | POST | `/api/profile` | Updated profile form (or HX-Redirect) |
 
+### Ingestion API Route (JSON)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/ingest` | API-key-protected ingestion endpoint (`structured` + `freeform` placeholder) |
+
 ### Auth Routes
 
 | Method | Path | Description |
@@ -290,6 +297,8 @@ The app starts at `http://localhost:3001`. Without a database configured, demo m
 npm run build      # Compile TypeScript to dist/
 npm start          # Run compiled server
 npm run check      # Type-check without emitting
+npm run test       # Unit tests
+npm run test:ingest-api  # Local integration checks for /api/ingest (401/200/409/429)
 ```
 
 ### Database Migrations
@@ -314,12 +323,130 @@ node scripts/migrate.mjs --mark-applied 0001_initial.sql
 | `DATABASE_URL` | No | - | Neon PostgreSQL connection string |
 | `NEON_AUTH_BASE_URL` | No | - | Neon Auth service URL |
 | `NEON_AUTH_COOKIE_SECRET` | No | - | Cookie signing secret for auth |
+| `INGEST_API_KEY` | No* | - | Required only for `POST /api/ingest`; accepted via `Authorization: Bearer` or `x-api-key` |
+| `INGEST_RATE_LIMIT_WINDOW_MS` | No | `60000` | Fixed-window rate-limit window in milliseconds |
+| `INGEST_RATE_LIMIT_MAX` | No | `60` | Max ingest requests per window per API key + userId |
+| `INGEST_IDEMPOTENCY_TTL_MS` | No | `3600000` | In-memory idempotency cache TTL (milliseconds) |
 | `APP_URL` | No | `http://localhost:3001` | Public URL of the application |
 | `PORT` | No | `3001` | Server port |
 
 All variables are optional. The app degrades gracefully:
 - **No DATABASE_URL**: DB operations return null/empty, demo mode works
 - **No NEON_AUTH_***: Auth endpoints return 503, guests see demo mode
+- **No INGEST_API_KEY**: `/api/ingest` returns 503
+
+Example API key format:
+
+```bash
+INGEST_API_KEY=tz6_ingest_dev_kzJ9Vw2QmN7xR4pT8dL1sA5f
+```
+
+Generate a stronger key:
+
+```bash
+openssl rand -hex 32
+```
+
+---
+
+## Ingestion API
+
+`POST /api/ingest` is intended for server-to-server clients (not browser HTMX flows).
+
+Authentication:
+- `Authorization: Bearer <INGEST_API_KEY>` or `x-api-key: <INGEST_API_KEY>`
+
+Request modes:
+- `structured`: implemented
+- `freeform`: currently returns `501 Not Implemented`
+
+### Structured Request Shape
+
+```json
+{
+  "mode": "structured",
+  "userId": "user_123",
+  "dryRun": true,
+  "idempotencyKey": "req-20260316-001",
+  "items": [
+    {
+      "kind": "practice",
+      "fields": {
+        "date": "2026-03-16",
+        "workedOn": "Serve + return",
+        "withCoach": true,
+        "coachName": "Coach Kim",
+        "notes": "Short, high-intensity block"
+      },
+      "source": "api",
+      "confidence": 1,
+      "warnings": []
+    }
+  ]
+}
+```
+
+### Structured Response Shape
+
+```json
+{
+  "accepted": true,
+  "candidates": [],
+  "created": [],
+  "errors": [],
+  "warnings": []
+}
+```
+
+Status behavior:
+- `200`: parsed/validated (and persisted when `dryRun` is false)
+- `400`: invalid JSON body or invalid request contract
+- `401`: API key missing/invalid
+- `409`: idempotency conflict or request already in flight
+- `413`: request body too large
+- `429`: rate limit exceeded (`Retry-After` header set)
+- `501`: freeform mode not yet implemented
+- `503`: ingest API not configured (`INGEST_API_KEY` missing)
+
+Idempotency notes:
+- Provide `idempotencyKey` to enable replay safety.
+- Current implementation is **in-memory** (single-process best effort), controlled by `INGEST_IDEMPOTENCY_TTL_MS`.
+- A repeated request with the same key + same payload returns cached response.
+- Same key + different payload returns `409`.
+
+### curl Examples
+
+Dry run:
+
+```bash
+curl -sS -X POST http://localhost:3001/api/ingest \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer tz6_ingest_dev_kzJ9Vw2QmN7xR4pT8dL1sA5f" \
+  -d '{
+    "mode":"structured",
+    "userId":"user_123",
+    "dryRun":true,
+    "items":[
+      {"kind":"goal","fields":{"weekStart":"2026-03-16","planText":"Keep first-serve percentage above 60%"}}
+    ]
+  }'
+```
+
+Persist write:
+
+```bash
+curl -sS -X POST http://localhost:3001/api/ingest \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: tz6_ingest_dev_kzJ9Vw2QmN7xR4pT8dL1sA5f" \
+  -d '{
+    "mode":"structured",
+    "userId":"user_123",
+    "idempotencyKey":"ing-20260316-0001",
+    "items":[
+      {"kind":"exercise","fields":{"date":"2026-03-16","durationMin":35,"exerciseType":"Mobility","notes":"Hip and shoulder mobility"}}
+    ]
+  }'
+```
 
 ---
 

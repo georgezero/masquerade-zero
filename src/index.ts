@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { serve, type ServerType } from "@hono/node-server";
@@ -6,11 +7,6 @@ import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 
 import {
-  createDiet,
-  createExercise,
-  createGoal,
-  createMatch,
-  createPractice,
   deleteDiet,
   deleteExercise,
   deleteGoal,
@@ -28,7 +24,11 @@ import {
   updateTennisProfile,
   type Viewer,
 } from "./lib/app.js";
-import { authConfigured, env } from "./env.js";
+import { IngestService } from "./ingest/service.js";
+import { InMemoryIngestRuntime } from "./ingest/runtime.js";
+import { ingestApiRequestSchema } from "./ingest/schemas.js";
+import type { StructuredIngestInput } from "./ingest/types.js";
+import { authConfigured, env, ingestApiConfigured } from "./env.js";
 import { authJson, getAuthSession, proxyAuthRequest, setAuthCookies } from "./lib/auth.js";
 import {
   authPanel,
@@ -150,14 +150,33 @@ function depluralize(plural: string): string {
   return map[plural] ?? plural;
 }
 
-// Dispatches create/update/delete based on kind
-const creators: Record<string, (userId: string, body: Record<string, unknown>) => Promise<void>> = {
-  goal: createGoal,
-  practice: createPractice,
-  match: createMatch,
-  diet: createDiet,
-  exercise: createExercise,
-};
+function ingestApiAuthKey(c: AppContext): string | null {
+  const authHeader = c.req.header("authorization");
+  if (authHeader?.toLowerCase().startsWith("bearer ")) {
+    return authHeader.slice(7).trim();
+  }
+  return c.req.header("x-api-key")?.trim() || null;
+}
+
+function apiKeysMatch(expected: string, actual: string | null): boolean {
+  if (!actual) {
+    return false;
+  }
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(actual);
+  if (expectedBuffer.length !== actualBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+// Dispatches update/delete based on kind
+const ingestService = new IngestService();
+const ingestRuntime = new InMemoryIngestRuntime(
+  env.INGEST_RATE_LIMIT_WINDOW_MS,
+  env.INGEST_RATE_LIMIT_MAX,
+  env.INGEST_IDEMPOTENCY_TTL_MS,
+);
 
 const updaters: Record<string, (userId: string, id: string, body: Record<string, unknown>) => Promise<unknown>> = {
   goal: updateGoal,
@@ -333,17 +352,128 @@ app.get("/api/entry-launcher", async (c) => {
   return c.html(entryLauncher());
 });
 
+// Ingestion API: POST /api/ingest
+app.post("/api/ingest", async (c) => {
+  const contentLength = Number(c.req.header("content-length") || "0");
+  if (Number.isFinite(contentLength) && contentLength > 100_000) {
+    return c.json({ error: "Request body too large." }, 413);
+  }
+
+  if (!ingestApiConfigured || !env.INGEST_API_KEY) {
+    return c.json({ error: "Ingest API is not configured." }, 503);
+  }
+
+  const providedApiKey = ingestApiAuthKey(c as AppContext);
+  if (!apiKeysMatch(env.INGEST_API_KEY, providedApiKey)) {
+    return c.json({ error: "Unauthorized." }, 401);
+  }
+
+  let requestBody: unknown;
+  try {
+    requestBody = await c.req.json();
+  } catch {
+    return c.json({ error: "Request body must be valid JSON." }, 400);
+  }
+
+  const parsed = ingestApiRequestSchema.safeParse(requestBody);
+  if (!parsed.success) {
+    const message = parsed.error.issues[0]?.message ?? "Invalid ingest request.";
+    return c.json({ error: message }, 400);
+  }
+
+  const request = parsed.data;
+  const requestFingerprint = createHash("sha256").update(JSON.stringify(request)).digest("hex");
+  const clientKey = [providedApiKey, request.userId].filter(Boolean).join(":");
+  const idempotencyCompositeKey = request.idempotencyKey
+    ? `${request.userId}:${request.idempotencyKey}`
+    : null;
+
+  if (idempotencyCompositeKey) {
+    const idemStatus = ingestRuntime.beginIdempotentRequest(idempotencyCompositeKey, requestFingerprint);
+    if (idemStatus.state === "replay") {
+      return new Response(JSON.stringify(idemStatus.responseBody), {
+        status: idemStatus.statusCode,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+    }
+    if (idemStatus.state === "in_flight") {
+      return c.json({ error: "Request with this idempotency key is already in progress." }, 409);
+    }
+    if (idemStatus.state === "conflict") {
+      return c.json({ error: "Idempotency key already used with a different payload." }, 409);
+    }
+  }
+
+  const rateLimit = ingestRuntime.checkRateLimit(clientKey);
+  if (!rateLimit.allowed) {
+    c.header("Retry-After", String(rateLimit.retryAfterSec));
+    return c.json({ error: "Rate limit exceeded." }, 429);
+  }
+
+  if (request.mode === "freeform") {
+    const body = {
+      accepted: false,
+      candidates: [],
+      created: [],
+      errors: [{ index: -1, message: "Freeform mode is not implemented yet." }],
+      warnings: [],
+    };
+    if (idempotencyCompositeKey) {
+      ingestRuntime.completeIdempotentRequest(idempotencyCompositeKey, requestFingerprint, body, 501);
+    }
+    return c.json(body, 501);
+  }
+
+  const items: StructuredIngestInput[] = request.items.map((item) => ({
+    confidence: item.confidence,
+    fields: item.fields,
+    kind: item.kind,
+    source: item.source,
+    warnings: item.warnings,
+  }));
+
+  const result = await ingestService.ingest(request.userId, {
+    mode: "structured",
+    dryRun: request.dryRun,
+    items,
+  });
+
+  const warnings = request.idempotencyKey
+    ? [...result.warnings, "Idempotency key received but deduplication is not implemented yet."]
+    : result.warnings;
+
+  const body = {
+    ...result,
+    warnings: request.idempotencyKey
+      ? [...result.warnings, "Idempotency key accepted and cached in-memory for replay."]
+      : result.warnings,
+  };
+
+  if (idempotencyCompositeKey) {
+    ingestRuntime.completeIdempotentRequest(idempotencyCompositeKey, requestFingerprint, body, 200);
+  }
+
+  return c.json(body);
+});
+
 // Create entry:  POST /api/goals
 app.post("/api/:kind{goals|practices|matches|diets|exercises}", async (c) => {
   const viewer = c.get("viewer");
   requireAuth(viewer);
 
   const kind = depluralize(c.req.param("kind"));
-  const create = creators[kind];
-  if (!create) { throw new Error("Unknown entry type."); }
+  if (!isValidKind(kind)) {
+    throw new Error("Unknown entry type.");
+  }
 
   const body = await c.req.parseBody();
-  await create(viewer.authUser.id, body as Record<string, unknown>);
+  const result = await ingestService.ingest(viewer.authUser.id, {
+    mode: "structured",
+    items: [{ kind, fields: body, source: "manual" }],
+  });
+  if (!result.accepted) {
+    throw new Error(result.errors[0]?.message || "Invalid entry payload.");
+  }
 
   // After create, redirect to home so URL and view both return to "/"
   c.header("HX-Redirect", "/");
