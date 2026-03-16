@@ -1,7 +1,7 @@
 import type { Viewer, HistoryItem, AppProfile } from "./lib/app.js";
 import { escapeHtml, formatDateTime } from "./lib/html.js";
 
-const ASSET_VERSION = "20260316-six-alpha-010";
+const ASSET_VERSION = "20260316-six-alpha-016";
 
 function avatarInitials(viewer: Viewer) {
   const first = viewer.profile?.firstName?.trim() || "";
@@ -26,7 +26,7 @@ function headerActions(viewer: Viewer) {
   if (viewer.role === "guest") {
     return `
       <div class="flex items-center gap-2">
-        <button id="signin-open" class="shrink-0 whitespace-nowrap rounded-xl border border-cyan-200/80 bg-cyan-400/25 px-4 py-2 text-sm font-bold text-cyan-50 shadow-[0_0_18px_rgba(34,211,238,0.35)] transition hover:bg-cyan-400/35" type="button">Sign in</button>
+        <a id="signin-open" href="/sign-in" class="shrink-0 whitespace-nowrap rounded-xl border border-cyan-200/80 bg-cyan-400/25 px-4 py-2 text-sm font-bold text-cyan-50 shadow-[0_0_18px_rgba(34,211,238,0.35)] transition hover:bg-cyan-400/35">Sign in</a>
       </div>
     `;
   }
@@ -91,7 +91,15 @@ export function historySection(items: HistoryItem[], total: number, filter: stri
     <section id="feed" class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 shadow-neon sm:max-w-3xl sm:p-5">
       <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h2 class="text-xl font-bold tracking-tight text-white sm:text-2xl">Recent Entries</h2>
-        <span class="rounded-full border border-cyan-300/30 bg-cyan-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-cyan-200">Last 15</span>
+        <button
+          hx-get="/api/entry-launcher"
+          hx-target="#main-content"
+          hx-swap="innerHTML"
+          type="button"
+          class="rounded-xl border border-fuchsia-200/80 bg-fuchsia-400/25 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-fuchsia-50 shadow-[0_0_18px_rgba(232,121,249,0.35)] transition hover:bg-fuchsia-400/35"
+        >
+          Add Entry
+        </button>
       </div>
       <div class="mb-3 flex flex-wrap items-center gap-2">
         <label for="history-filter" class="text-xs uppercase tracking-wide text-slate-400">Category</label>
@@ -374,7 +382,7 @@ export function profileForm(viewer: Viewer) {
     : "Update your tennis identity, preferences, and avatar at any time.";
 
   return `
-    <section id="profile-shell" class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 shadow-neon sm:max-w-5xl sm:p-5">
+    <section id="profile-shell" class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 shadow-neon sm:max-w-3xl sm:p-5">
       <div class="mb-4">
         <p class="text-xs uppercase tracking-[0.28em] text-amber-300/80">${escapeHtml(eyebrow)}</p>
         <h2 class="mt-1 text-xl font-bold tracking-tight text-white sm:text-2xl">${escapeHtml(heading)}</h2>

@@ -140,7 +140,12 @@ function initAuthToggle() {
     // "Sign in" button opens the auth form and hides demo content
     const signinOpen = target.closest("#signin-open");
     if (signinOpen) {
+      e.preventDefault();
       const authPanel = document.getElementById("auth-panel");
+      if (!authPanel) {
+        window.location.href = "/sign-in";
+        return;
+      }
       const shell = document.getElementById("auth-form-shell");
       const cancelBtn = document.getElementById("auth-cancel-btn");
       const demoContent = document.getElementById("demo-content");
@@ -404,7 +409,7 @@ function renderDemoHistory() {
     <section id="feed" class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 shadow-neon sm:max-w-3xl sm:p-5">
       <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h2 class="text-xl font-bold tracking-tight text-white sm:text-2xl">Recent Entries</h2>
-        <span class="rounded-full border border-cyan-300/30 bg-cyan-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-cyan-200">Demo</span>
+        <a href="/demo/add" class="rounded-xl border border-fuchsia-200/80 bg-fuchsia-400/25 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-fuchsia-50 shadow-[0_0_18px_rgba(232,121,249,0.35)] transition hover:bg-fuchsia-400/35">Add Entry</a>
       </div>
       <div class="mb-3 flex flex-wrap items-center gap-2">
         <label for="demo-filter" class="text-xs uppercase tracking-wide text-slate-400">Category</label>
@@ -586,6 +591,9 @@ function renderDemoForm(kind, item) {
 function parseDemoRoute() {
   const path = window.location.pathname;
 
+  // /demo/add
+  if (path === "/demo/add") return { mode: "add" };
+
   // /demo/view/:kind/:id
   const viewMatch = path.match(/^\/demo\/view\/([^/]+)\/([^/]+)$/);
   if (viewMatch) return { mode: "view", kind: decodeURIComponent(viewMatch[1]), id: decodeURIComponent(viewMatch[2]) };
@@ -643,8 +651,10 @@ function renderDemoPage() {
     container.innerHTML = renderDemoBanner() + (item ? renderDemoForm(route.kind, item) : renderDemoDetail(route.kind, route.id));
   } else if (route.mode === "new" && route.kind && VALID_KINDS.includes(route.kind)) {
     container.innerHTML = renderDemoBanner() + renderDemoForm(route.kind);
+  } else if (route.mode === "add") {
+    container.innerHTML = renderDemoBanner() + renderDemoLauncher();
   } else {
-    container.innerHTML = renderDemoBanner() + renderDemoLauncher() + renderDemoHistory();
+    container.innerHTML = renderDemoBanner() + renderDemoHistory();
   }
 
   bindDemoEvents();
@@ -673,12 +683,26 @@ function bindDemoEvents() {
   // Delete button
   const deleteBtn = document.getElementById("demo-delete-btn");
   if (deleteBtn) {
-    deleteBtn.addEventListener("click", () => {
+    const runDelete = () => {
+      const kind = deleteBtn.dataset.kind || deleteBtn.getAttribute("data-kind");
+      const id = deleteBtn.dataset.id || deleteBtn.getAttribute("data-id");
+      if (!kind || !id) return;
       if (!window.confirm("Delete this entry?")) return;
-      deleteLocalEntry(deleteBtn.dataset.kind, deleteBtn.dataset.id);
+      deleteLocalEntry(kind, id);
       window.history.pushState({}, "", isGuestHome ? "/" : "/demo");
       renderDemoPage();
+    };
+
+    deleteBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      runDelete();
     });
+
+    // iOS Safari can be inconsistent with synthetic click timing on dynamic buttons.
+    deleteBtn.addEventListener("touchend", (e) => {
+      e.preventDefault();
+      runDelete();
+    }, { passive: false });
   }
 
   // Form submission

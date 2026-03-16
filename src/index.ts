@@ -63,6 +63,27 @@ const app = new Hono<{ Variables: AppVariables }>();
 app.use("/app.css", serveStatic({ path: "./public/app.css" }));
 app.use("/app.js", serveStatic({ path: "./public/app.js" }));
 
+// Force HTTPS for public hosts so secure auth cookies can be set reliably.
+app.use("*", async (c, next) => {
+  const forwardedProto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim();
+  const host = (c.req.header("x-forwarded-host") || c.req.header("host") || "").split(",")[0]?.trim();
+  const hostname = host.split(":")[0]?.toLowerCase();
+  const localHost =
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "::1" ||
+    hostname.endsWith(".local");
+
+  if (forwardedProto === "http" && host && !localHost) {
+    const url = new URL(c.req.url);
+    url.protocol = "https:";
+    url.host = host;
+    return c.redirect(url.toString(), 308);
+  }
+
+  await next();
+});
+
 // ---------------------------------------------------------------------------
 // Viewer middleware
 // ---------------------------------------------------------------------------
@@ -169,15 +190,25 @@ app.get("/", async (c) => {
   if (viewer.role === "guest") {
     // Guest users get demo mode with localStorage data on the home page
     routeName = "demo";
-    bodyContent = authPanel(viewer, !!flash);
+    bodyContent = "";
   } else if (viewer.profileRequired) {
     bodyContent = profileForm(viewer);
   } else {
     const { items, total } = await listHistory(viewer.authUser!.id, "all", 15, 0);
-    bodyContent = entryLauncher() + historySection(items, total, "all");
+    bodyContent = historySection(items, total, "all");
   }
 
   return c.html(page({ viewer, route: routeName, flash, bodyContent }));
+});
+
+// Sign-in page (guest only)
+app.get("/sign-in", async (c) => {
+  const viewer = c.get("viewer");
+  c.header("Cache-Control", "no-store");
+  if (viewer.role !== "guest") {
+    return c.redirect("/");
+  }
+  return c.html(page({ viewer, route: "home", flash: getFlash(c), bodyContent: authPanel(viewer, true) }));
 });
 
 // Profile page
@@ -295,6 +326,13 @@ app.get("/api/history", async (c) => {
   return c.html(historySection(items, total, kind));
 });
 
+// Entry launcher panel (HTMX swap target: #main-content)
+app.get("/api/entry-launcher", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+  return c.html(entryLauncher());
+});
+
 // Create entry:  POST /api/goals
 app.post("/api/:kind{goals|practices|matches|diets|exercises}", async (c) => {
   const viewer = c.get("viewer");
@@ -307,9 +345,9 @@ app.post("/api/:kind{goals|practices|matches|diets|exercises}", async (c) => {
   const body = await c.req.parseBody();
   await create(viewer.authUser.id, body as Record<string, unknown>);
 
-  // After create, return updated feed
-  const { items, total } = await listHistory(viewer.authUser.id, "all", 15, 0);
-  return c.html(entryLauncher() + historySection(items, total, "all"));
+  // After create, redirect to home so URL and view both return to "/"
+  c.header("HX-Redirect", "/");
+  return c.html("");
 });
 
 // Update entry:  PATCH /api/goals/:id
@@ -400,7 +438,7 @@ app.post("/auth/sign-up", async (c) => {
     }),
   });
 
-  const headers = new Headers({ location: "/" });
+  const headers = new Headers({ location: response.ok ? "/" : "/sign-in" });
   setAuthCookies(response, headers);
   const responseText = await response.text();
   const responseMessage = extractAuthMessage(responseText);
@@ -429,7 +467,7 @@ app.post("/auth/sign-in", async (c) => {
     }),
   });
 
-  const headers = new Headers({ location: "/" });
+  const headers = new Headers({ location: response.ok ? "/" : "/sign-in" });
   setAuthCookies(response, headers);
   const responseText = await response.text();
   const responseMessage = extractAuthMessage(responseText);
