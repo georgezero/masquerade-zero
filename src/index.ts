@@ -7,6 +7,11 @@ import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 
 import {
+  createDiet,
+  createExercise,
+  createGoal,
+  createMatch,
+  createPractice,
   deleteDiet,
   deleteExercise,
   deleteGoal,
@@ -24,12 +29,17 @@ import {
   updateTennisProfile,
   type Viewer,
 } from "./lib/app.js";
+import { and, desc, eq } from "drizzle-orm";
+import { db } from "./db/index.js";
+import { journalSubmissionCandidates, journalSubmissionEntries, journalSubmissions } from "./db/schema.js";
 import { IngestService } from "./ingest/service.js";
+import { parseFreeformJournalToStructuredItems } from "./ingest/freeform.js";
 import { PostgresIngestRuntime } from "./ingest/runtime.js";
 import { ingestApiRequestSchema } from "./ingest/schemas.js";
-import type { StructuredIngestInput } from "./ingest/types.js";
+import type { IngestItem, IngestValidationError, StructuredIngestInput } from "./ingest/types.js";
 import { authConfigured, env, ingestApiConfigured, ingestApiKeys, type IngestApiKeyRecord } from "./env.js";
 import { authJson, getAuthSession, proxyAuthRequest, setAuthCookies } from "./lib/auth.js";
+import { escapeHtml } from "./lib/html.js";
 import {
   authPanel,
   entryDetail,
@@ -181,6 +191,328 @@ function keyHasAnyScope(key: IngestApiKeyRecord, scopes: Array<"ingest:write" | 
   return scopes.some((scope) => key.scopes.includes(scope));
 }
 
+function sanitizeRedirectTo(value: unknown, fallback = "/"): string {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//")) {
+    return fallback;
+  }
+  return trimmed;
+}
+
+function inputValue(value: unknown) {
+  return escapeHtml(String(value ?? ""));
+}
+
+type JournalStatus = "draft" | "finalized";
+
+type JournalDraft = {
+  id: string;
+  rawText: string;
+  status: JournalStatus;
+};
+
+const journalCreators = {
+  diet: createDiet,
+  exercise: createExercise,
+  goal: createGoal,
+  match: createMatch,
+  practice: createPractice,
+} as const;
+
+async function getLatestDraftJournal(userId: string): Promise<JournalDraft | null> {
+  if (!db) {
+    return null;
+  }
+  const rows = await db
+    .select({
+      id: journalSubmissions.id,
+      rawText: journalSubmissions.rawText,
+      status: journalSubmissions.status,
+    })
+    .from(journalSubmissions)
+    .where(and(eq(journalSubmissions.userId, userId), eq(journalSubmissions.status, "draft")))
+    .orderBy(desc(journalSubmissions.updatedAt))
+    .limit(1);
+
+  if (!rows[0]) {
+    return null;
+  }
+  return {
+    id: rows[0].id,
+    rawText: rows[0].rawText,
+    status: rows[0].status as JournalStatus,
+  };
+}
+
+async function getJournalById(userId: string, journalId: string): Promise<JournalDraft | null> {
+  if (!db) {
+    return null;
+  }
+  const rows = await db
+    .select({
+      id: journalSubmissions.id,
+      rawText: journalSubmissions.rawText,
+      status: journalSubmissions.status,
+    })
+    .from(journalSubmissions)
+    .where(and(eq(journalSubmissions.id, journalId), eq(journalSubmissions.userId, userId)))
+    .limit(1);
+  if (!rows[0]) {
+    return null;
+  }
+  return {
+    id: rows[0].id,
+    rawText: rows[0].rawText,
+    status: rows[0].status as JournalStatus,
+  };
+}
+
+async function upsertDraftJournal(userId: string, text: string, journalId?: string): Promise<JournalDraft> {
+  if (!db) {
+    throw new Error("Database is not configured.");
+  }
+
+  if (journalId) {
+    const existing = await getJournalById(userId, journalId);
+    if (existing && existing.status === "draft") {
+      const updated = await db
+        .update(journalSubmissions)
+        .set({ rawText: text, updatedAt: new Date() })
+        .where(and(eq(journalSubmissions.id, journalId), eq(journalSubmissions.userId, userId)))
+        .returning({ id: journalSubmissions.id, rawText: journalSubmissions.rawText, status: journalSubmissions.status });
+      if (updated[0]) {
+        await db.delete(journalSubmissionCandidates).where(eq(journalSubmissionCandidates.journalId, updated[0].id));
+        return { id: updated[0].id, rawText: updated[0].rawText, status: updated[0].status as JournalStatus };
+      }
+    }
+  }
+
+  const inserted = await db
+    .insert(journalSubmissions)
+    .values({ userId, rawText: text, status: "draft", updatedAt: new Date() })
+    .returning({ id: journalSubmissions.id, rawText: journalSubmissions.rawText, status: journalSubmissions.status });
+
+  if (!inserted[0]) {
+    throw new Error("Could not create journal draft.");
+  }
+  return { id: inserted[0].id, rawText: inserted[0].rawText, status: inserted[0].status as JournalStatus };
+}
+
+async function finalizeJournal(userId: string, journalId: string): Promise<JournalDraft> {
+  if (!db) {
+    throw new Error("Database is not configured.");
+  }
+  const rows = await db
+    .update(journalSubmissions)
+    .set({ status: "finalized", updatedAt: new Date() })
+    .where(and(eq(journalSubmissions.id, journalId), eq(journalSubmissions.userId, userId)))
+    .returning({ id: journalSubmissions.id, rawText: journalSubmissions.rawText, status: journalSubmissions.status });
+  if (!rows[0]) {
+    throw new Error("Journal not found.");
+  }
+  return { id: rows[0].id, rawText: rows[0].rawText, status: rows[0].status as JournalStatus };
+}
+
+function journalShell(options?: { journalId?: string; rawText?: string; finalized?: boolean }) {
+  const journalId = options?.journalId ?? "";
+  const rawText = options?.rawText ?? "";
+  const finalized = Boolean(options?.finalized);
+  const readOnlyAttrs = finalized ? " readonly disabled" : "";
+  const readOnlyClass = finalized ? " opacity-60 cursor-not-allowed bg-slate-800/80 border-slate-500/40" : "";
+  const parseButton = finalized
+    ? `<button id="journal-preview-button" type="button" class="rounded-xl border border-slate-500/40 bg-slate-700/40 px-4 py-2 text-sm font-semibold text-slate-300" disabled>Journal Finalized</button>`
+    : `<button id="journal-preview-button" type="submit" data-submitting-text="Parsing..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400">Preview Candidates</button>`;
+  const resetLabel = finalized ? "New Journal" : "Edit Journal";
+
+  return `
+    <section class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 shadow-neon sm:max-w-3xl sm:p-5">
+      <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p class="text-xs uppercase tracking-[0.28em] text-cyan-300/80">Journal</p>
+          <h2 class="mt-1 text-xl font-bold tracking-tight text-white sm:text-2xl">Journal</h2>
+          <p class="mt-1 text-sm text-slate-300">Write your journal entry and incorporate goals, practices, matches, diet, and exercises. For semicolon-delimited lines, field names are optional and can be inferred by order.</p>
+        </div>
+        <a href="/" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Home</a>
+      </div>
+      <form hx-post="/api/journal/preview" hx-target="#journal-preview" hx-swap="innerHTML" class="grid gap-3">
+        <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="goal: Keep first serve above 60%\n\npractice: date=2026-03-16; workedOn=Serve + return; withCoach=true; coachName=Coach Kim; notes=Short block\n\ndiet: Hydration and protein focus" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}">${escapeHtml(rawText)}</textarea>
+        <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" />
+        <div class="flex flex-wrap items-center gap-3">
+          ${parseButton}
+          <button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">${resetLabel}</button>
+          <p class="form-status min-h-5 text-sm font-medium text-emerald-300"></p>
+        </div>
+      </form>
+    </section>
+    <section id="journal-feedback" class="mx-auto w-full max-w-[24.5rem] sm:max-w-3xl"></section>
+    <section id="journal-preview" class="mx-auto w-full max-w-[24.5rem] sm:max-w-3xl"></section>
+  `;
+}
+
+function renderJournalStateOob(journal: JournalDraft) {
+  const finalized = journal.status === "finalized";
+  const readOnlyAttrs = finalized ? " readonly disabled" : "";
+  const readOnlyClass = finalized ? " opacity-60 cursor-not-allowed bg-slate-800/80 border-slate-500/40" : "";
+  const previewButton = finalized
+    ? `<button id="journal-preview-button" type="button" class="rounded-xl border border-slate-500/40 bg-slate-700/40 px-4 py-2 text-sm font-semibold text-slate-300" disabled hx-swap-oob="true">Journal Finalized</button>`
+    : `<button id="journal-preview-button" type="submit" data-submitting-text="Parsing..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400" hx-swap-oob="true">Preview Candidates</button>`;
+  const resetLabel = finalized ? "New Journal" : "Edit Journal";
+
+  return `
+    <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="goal: Keep first serve above 60%\n\npractice: date=2026-03-16; workedOn=Serve + return; withCoach=true; coachName=Coach Kim; notes=Short block\n\ndiet: Hydration and protein focus" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}" hx-swap-oob="true">${escapeHtml(journal.rawText)}</textarea>
+    <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journal.id)}" hx-swap-oob="true" />
+    ${previewButton}
+    <button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10" hx-swap-oob="true">${resetLabel}</button>
+  `;
+}
+
+function renderJournalFeedbackOob(message: string) {
+  return `<div hx-swap-oob="afterbegin:#journal-feedback"><section class="glass mx-auto mt-3 w-full max-w-[24.5rem] rounded-2xl border border-emerald-300/30 bg-emerald-500/10 p-4 text-sm text-emerald-100 sm:max-w-3xl">${escapeHtml(message)}</section></div>`;
+}
+
+function renderJournalControls(journalId: string, finalized: boolean) {
+  if (finalized) {
+    return `<section id="journal-preview-controls" class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-slate-500/30 bg-slate-700/20 p-4 text-sm text-slate-200 sm:max-w-3xl"><strong>Journal finalized.</strong> New Journal to start a new journal draft.</section>`;
+  }
+  return `<section id="journal-preview-controls" class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 sm:max-w-3xl"><div class="flex flex-wrap items-center justify-between gap-2"><div><p class="text-xs uppercase tracking-wide text-cyan-300/80">Journal ID</p><p class="text-sm text-slate-200">${escapeHtml(journalId)}</p></div><button type="button" hx-post="/api/journal/finalize" hx-target="#journal-preview" hx-swap="innerHTML" hx-vals='{"journalId":"${escapeHtml(journalId)}"}' class="rounded-xl border border-cyan-300/35 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/20">Finalize</button></div></section>`;
+}
+
+function renderJournalControlsOob(journalId: string, finalized: boolean) {
+  return `<div hx-swap-oob="outerHTML:#journal-preview-controls">${renderJournalControls(journalId, finalized)}</div>`;
+}
+
+function selectJournalFields(kind: (typeof VALID_KINDS)[number], body: Record<string, unknown>): Record<string, unknown> {
+  if (kind === "goal") {
+    return { weekStart: body.weekStart, planText: body.planText };
+  }
+  if (kind === "practice") {
+    return {
+      date: body.date,
+      workedOn: body.workedOn,
+      withCoach: body.withCoach,
+      coachName: body.coachName,
+      notes: body.notes,
+    };
+  }
+  if (kind === "match") {
+    return {
+      date: body.date,
+      opponent: body.opponent,
+      score: body.score,
+      notes: body.notes,
+    };
+  }
+  if (kind === "diet") {
+    return { date: body.date, summary: body.summary };
+  }
+  return {
+    date: body.date,
+    durationMin: body.durationMin,
+    exerciseType: body.exerciseType,
+    notes: body.notes,
+  };
+}
+
+function renderJournalCandidateFields(item: IngestItem) {
+  const fields = item.fields as Record<string, unknown>;
+  if (item.kind === "goal") {
+    return `
+      <input type="hidden" name="weekStart" value="${inputValue(fields.weekStart)}" />
+      <label class="grid gap-1 text-sm font-medium text-slate-300">Plan text
+        <textarea name="planText" rows="4" required class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2">${inputValue(fields.planText)}</textarea>
+      </label>
+    `;
+  }
+  if (item.kind === "practice") {
+    const withCoach = fields.withCoach ? " checked" : "";
+    return `
+      <label class="grid gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="w-full rounded-xl border border-blue-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-blue-400 focus:ring-2" /></label>
+      <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-300"><input type="checkbox" name="withCoach" value="true"${withCoach} class="h-4 w-4 rounded border-slate-500 bg-slate-800" /> Session with coach</label>
+      <label class="grid gap-1 text-sm font-medium text-slate-300">Coach name <input type="text" name="coachName" value="${inputValue(fields.coachName)}" class="w-full rounded-xl border border-blue-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-blue-400 focus:ring-2" /></label>
+      <label class="grid gap-1 text-sm font-medium text-slate-300">Worked on <textarea name="workedOn" rows="3" required class="w-full rounded-xl border border-blue-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-blue-400 focus:ring-2">${inputValue(fields.workedOn)}</textarea></label>
+      <label class="grid gap-1 text-sm font-medium text-slate-300">Notes <textarea name="notes" rows="3" class="w-full rounded-xl border border-blue-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-blue-400 focus:ring-2">${inputValue(fields.notes)}</textarea></label>
+    `;
+  }
+  if (item.kind === "match") {
+    return `
+      <label class="grid gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="w-full rounded-xl border border-emerald-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-emerald-400 focus:ring-2" /></label>
+      <label class="grid gap-1 text-sm font-medium text-slate-300">Opponent <input type="text" name="opponent" value="${inputValue(fields.opponent)}" required class="w-full rounded-xl border border-emerald-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-emerald-400 focus:ring-2" /></label>
+      <label class="grid gap-1 text-sm font-medium text-slate-300">Score <input type="text" name="score" value="${inputValue(fields.score)}" class="w-full rounded-xl border border-emerald-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-emerald-400 focus:ring-2" /></label>
+      <label class="grid gap-1 text-sm font-medium text-slate-300">Notes <textarea name="notes" rows="3" class="w-full rounded-xl border border-emerald-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-emerald-400 focus:ring-2">${inputValue(fields.notes)}</textarea></label>
+    `;
+  }
+  if (item.kind === "diet") {
+    return `
+      <label class="grid gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="w-full rounded-xl border border-amber-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-amber-400 focus:ring-2" /></label>
+      <label class="grid gap-1 text-sm font-medium text-slate-300">Summary <textarea name="summary" rows="4" required class="w-full rounded-xl border border-amber-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-amber-400 focus:ring-2">${inputValue(fields.summary)}</textarea></label>
+    `;
+  }
+
+  const exerciseType = String(fields.exerciseType ?? "Other");
+  return `
+    <label class="grid gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="w-full rounded-xl border border-violet-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-violet-400 focus:ring-2" /></label>
+    <label class="grid gap-1 text-sm font-medium text-slate-300">Type
+      <select name="exerciseType" class="w-full rounded-xl border border-violet-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-violet-400 focus:ring-2">
+        ${["Strength", "Cardio", "Mobility", "Recovery", "Other"].map((type) => `<option${type === exerciseType ? " selected" : ""}>${type}</option>`).join("")}
+      </select>
+    </label>
+    <label class="grid gap-1 text-sm font-medium text-slate-300">Duration (min) <input type="number" name="durationMin" min="1" value="${inputValue(fields.durationMin)}" required class="w-full rounded-xl border border-violet-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-violet-400 focus:ring-2" /></label>
+    <label class="grid gap-1 text-sm font-medium text-slate-300">Notes <textarea name="notes" rows="3" class="w-full rounded-xl border border-violet-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-violet-400 focus:ring-2">${inputValue(fields.notes)}</textarea></label>
+  `;
+}
+
+function renderJournalPreview(params: { journalId: string; candidates: IngestItem[]; errors: IngestValidationError[]; finalized?: boolean; rawText?: string }) {
+  const { journalId, candidates, errors, finalized, rawText } = params;
+  if (candidates.length === 0 && errors.length === 0) {
+    return `<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">No candidate entries found. Use one entry per line, for example: <code>goal: Keep first serve above 60%</code>.</section>`;
+  }
+
+  const controls = renderJournalControls(journalId, Boolean(finalized));
+
+  const errorHtml = errors.length > 0
+    ? `<section class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-rose-300/30 bg-rose-500/10 p-4 text-sm text-rose-100 sm:max-w-3xl"><p class="font-semibold">Some lines could not be parsed/validated:</p><ul class="mt-2 grid gap-1">${errors.map((error) => `<li>• ${escapeHtml(error.message)}</li>`).join("")}</ul></section>`
+    : "";
+
+  const cards = candidates
+    .map((candidate, index) => {
+      const previewId = `journal-${index}-${candidate.kind}`;
+      const warnings = candidate.warnings.length > 0
+        ? `<div class="rounded-xl border border-amber-300/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">${candidate.warnings.map((warning) => escapeHtml(warning)).join(" ")}</div>`
+        : "";
+
+      return `
+        <section id="journal-item-${previewId}" class="glass mx-auto mt-3 w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 shadow-neon sm:max-w-3xl sm:p-5">
+          <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <span class="rounded-full border border-cyan-300/40 bg-cyan-500/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-cyan-100">${escapeHtml(candidate.kind)}</span>
+            <span class="text-xs text-slate-400">Confidence ${(candidate.confidence * 100).toFixed(0)}%</span>
+          </div>
+          ${warnings}
+          <form hx-post="/api/journal/confirm" hx-target="#journal-item-${previewId}" hx-swap="outerHTML" class="mt-3 grid gap-3">
+            <input type="hidden" name="kind" value="${escapeHtml(candidate.kind)}" />
+            <input type="hidden" name="journalId" value="${escapeHtml(journalId)}" />
+            <input type="hidden" name="candidateIndex" value="${index}" />
+            ${renderJournalCandidateFields(candidate)}
+            <div class="flex flex-wrap items-center gap-2">
+              <button type="submit" data-submitting-text="Saving..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400">Confirm & Save</button>
+              <button type="button" hx-post="/api/journal/dismiss" hx-target="#journal-item-${previewId}" hx-swap="outerHTML" hx-vals='{"journalId":"${escapeHtml(journalId)}","candidateIndex":"${index}"}' class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Dismiss</button>
+            </div>
+            <p class="form-status min-h-5 text-sm font-medium text-emerald-300"></p>
+          </form>
+        </section>
+      `;
+    })
+    .join("");
+
+  const oob = finalized && typeof rawText === "string"
+    ? renderJournalStateOob({ id: journalId, rawText, status: "finalized" })
+    : `<input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" hx-swap-oob="true" />`;
+
+  return `${oob}${controls}${errorHtml}${cards}`;
+}
+
 // Dispatches update/delete based on kind
 const ingestService = new IngestService();
 const ingestRuntime = new PostgresIngestRuntime(
@@ -238,7 +570,8 @@ app.get("/sign-in", async (c) => {
   if (viewer.role !== "guest") {
     return c.redirect("/");
   }
-  return c.html(page({ viewer, route: "sign-in", flash: getFlash(c), bodyContent: authPanel(viewer, true) }));
+  const redirectTo = sanitizeRedirectTo(c.req.query("redirectTo"), "/");
+  return c.html(page({ viewer, route: "sign-in", flash: getFlash(c), bodyContent: authPanel(viewer, true, redirectTo) }));
 });
 
 // Profile page
@@ -313,6 +646,27 @@ app.get("/new/:kind", async (c) => {
   return c.html(page({ viewer, route: "new", flash: getFlash(c), bodyContent: entryForm(kind) }));
 });
 
+// Journal ingestion page
+app.get("/journal", async (c) => {
+  const viewer = c.get("viewer");
+  if (viewer.role === "guest" || !viewer.authUser) {
+    setFlash(c, "Sign in required.");
+    return c.redirect(`/sign-in?redirectTo=${encodeURIComponent("/journal")}`);
+  }
+  c.header("Cache-Control", "no-store");
+  const draft = await getLatestDraftJournal(viewer.authUser.id);
+  return c.html(page({
+    viewer,
+    route: "journal",
+    flash: getFlash(c),
+    bodyContent: journalShell({
+      journalId: draft?.id,
+      rawText: draft?.rawText,
+      finalized: draft?.status === "finalized",
+    }),
+  }));
+});
+
 // ---------------------------------------------------------------------------
 // Demo routes — full page shell, JS handles everything client-side
 // ---------------------------------------------------------------------------
@@ -361,6 +715,173 @@ app.get("/api/entry-launcher", async (c) => {
   const viewer = c.get("viewer");
   requireAuth(viewer);
   return c.html(entryLauncher());
+});
+
+// Journal preview parser (HTMX fragment target: #journal-preview)
+app.post("/api/journal/preview", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+
+  const body = await c.req.parseBody();
+  const text = String(body.text ?? "").trim();
+  const requestedJournalId = String(body.journalId ?? "").trim() || undefined;
+  if (!text) {
+    return c.html(`<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">Enter journal text before previewing.</section>`);
+  }
+
+  const journal = await upsertDraftJournal(viewer.authUser.id, text, requestedJournalId);
+  const items = parseFreeformJournalToStructuredItems(text);
+  if (items.length === 0) {
+    return c.html(renderJournalPreview({ journalId: journal.id, candidates: [], errors: [] }));
+  }
+
+  const result = await ingestService.ingest(viewer.authUser.id, {
+    mode: "structured",
+    dryRun: true,
+    items,
+  });
+
+  if (db) {
+    for (const [index, candidate] of result.candidates.entries()) {
+      await db
+        .insert(journalSubmissionCandidates)
+        .values({
+          journalId: journal.id,
+          candidateIndex: index,
+          kind: candidate.kind,
+          confidence: Math.round(candidate.confidence * 100),
+          payloadJson: JSON.stringify(candidate),
+          status: "pending",
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: [journalSubmissionCandidates.journalId, journalSubmissionCandidates.candidateIndex],
+          set: {
+            kind: candidate.kind,
+            confidence: Math.round(candidate.confidence * 100),
+            payloadJson: JSON.stringify(candidate),
+            status: "pending",
+            updatedAt: new Date(),
+          },
+        });
+    }
+  }
+
+  return c.html(renderJournalPreview({ journalId: journal.id, candidates: result.candidates, errors: result.errors }));
+});
+
+// Journal edit/reset starts a new draft shell
+app.post("/api/journal/edit", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+
+  return c.html(journalShell());
+});
+
+// Journal finalize action
+app.post("/api/journal/finalize", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+  const body = await c.req.parseBody();
+  const journalId = String(body.journalId ?? "").trim();
+  if (!journalId) {
+    throw new Error("journalId is required.");
+  }
+  await finalizeJournal(viewer.authUser.id, journalId);
+
+  const rows = await db
+    ?.select({
+      payloadJson: journalSubmissionCandidates.payloadJson,
+    })
+    .from(journalSubmissionCandidates)
+    .where(eq(journalSubmissionCandidates.journalId, journalId))
+    .orderBy(journalSubmissionCandidates.candidateIndex);
+
+  const candidates: IngestItem[] = (rows ?? []).map((row) => JSON.parse(row.payloadJson) as IngestItem);
+  const journal = await getJournalById(viewer.authUser.id, journalId);
+  return c.html(renderJournalPreview({ journalId, candidates, errors: [], finalized: true, rawText: journal?.rawText ?? "" }));
+});
+
+// Journal candidate confirm/save
+app.post("/api/journal/confirm", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+
+  const body = await c.req.parseBody() as Record<string, unknown>;
+  const journalId = String(body.journalId ?? "").trim();
+  const candidateIndexRaw = Number(body.candidateIndex ?? "");
+  const kind = String(body.kind ?? "").trim();
+  if (!journalId) {
+    throw new Error("journalId is required.");
+  }
+  if (!isValidKind(kind)) {
+    throw new Error("Unknown entry type.");
+  }
+  const fields = selectJournalFields(kind, body);
+
+  const validated = await ingestService.ingest(viewer.authUser.id, {
+    mode: "structured",
+    dryRun: true,
+    items: [{ kind, fields, source: "journal-ai" }],
+  });
+  if (!validated.accepted || validated.candidates.length === 0) {
+    throw new Error(validated.errors[0]?.message || "Invalid journal candidate.");
+  }
+
+  const journal = await getJournalById(viewer.authUser.id, journalId);
+  if (!journal) {
+    throw new Error("Journal not found.");
+  }
+  let finalizedJournal = journal;
+  if (journal.status !== "finalized") {
+    finalizedJournal = await finalizeJournal(viewer.authUser.id, journalId);
+  }
+
+  const created = await journalCreators[kind](viewer.authUser.id, validated.candidates[0]!.fields as Record<string, unknown>);
+  const entryId = typeof created === "object" && created && "id" in created ? String((created as { id: unknown }).id) : "";
+  if (!entryId) {
+    throw new Error("Could not determine created entry id.");
+  }
+
+  if (db) {
+    await db.insert(journalSubmissionEntries).values({
+      journalId,
+      candidateIndex: Number.isFinite(candidateIndexRaw) ? candidateIndexRaw : null,
+      kind,
+      entryId,
+    });
+
+    if (Number.isFinite(candidateIndexRaw)) {
+      await db
+        .update(journalSubmissionCandidates)
+        .set({ status: "saved", updatedAt: new Date() })
+        .where(and(eq(journalSubmissionCandidates.journalId, journalId), eq(journalSubmissionCandidates.candidateIndex, candidateIndexRaw)));
+    }
+  }
+
+  return c.html(`${renderJournalStateOob(finalizedJournal)}${renderJournalControlsOob(journalId, true)}${renderJournalFeedbackOob(`Saved ${kind} entry from journal ${journalId}.`)}<div class="hidden"></div>`);
+});
+
+// Journal candidate dismiss (no save)
+app.post("/api/journal/dismiss", async (c) => {
+  const viewer = c.get("viewer");
+  requireAuth(viewer);
+
+  const body = await c.req.parseBody();
+  const journalId = String(body.journalId ?? "").trim();
+  const candidateIndex = Number(body.candidateIndex ?? "");
+  if (!journalId || !Number.isFinite(candidateIndex)) {
+    throw new Error("journalId and candidateIndex are required.");
+  }
+
+  if (db) {
+    await db
+      .update(journalSubmissionCandidates)
+      .set({ status: "dismissed", updatedAt: new Date() })
+      .where(and(eq(journalSubmissionCandidates.journalId, journalId), eq(journalSubmissionCandidates.candidateIndex, candidateIndex)));
+  }
+
+  return c.html(`${renderJournalFeedbackOob(`Dismissed candidate ${candidateIndex + 1} from journal ${journalId}.`)}<div class="hidden"></div>`);
 });
 
 // Ingestion API: POST /api/ingest
@@ -586,17 +1107,18 @@ app.post("/auth/sign-up", async (c) => {
   }
 
   const body = await c.req.parseBody();
+  const redirectTo = sanitizeRedirectTo(body.redirectTo, "/");
   const response = await authJson(c.req.raw, "/sign-up/email", {
     method: "POST",
     body: JSON.stringify({
       name: String(body.name ?? ""),
       email: String(body.email ?? ""),
       password: String(body.password ?? ""),
-      callbackURL: `${env.APP_URL}/auth/callback?redirectTo=/`,
+      callbackURL: `${env.APP_URL}/auth/callback?redirectTo=${encodeURIComponent(redirectTo)}`,
     }),
   });
 
-  const headers = new Headers({ location: response.ok ? "/" : "/sign-in" });
+  const headers = new Headers({ location: response.ok ? redirectTo : `/sign-in?redirectTo=${encodeURIComponent(redirectTo)}` });
   setAuthCookies(response, headers);
   const responseText = await response.text();
   const responseMessage = extractAuthMessage(responseText);
@@ -617,6 +1139,7 @@ app.post("/auth/sign-in", async (c) => {
   }
 
   const body = await c.req.parseBody();
+  const redirectTo = sanitizeRedirectTo(body.redirectTo, "/");
   const response = await authJson(c.req.raw, "/sign-in/email", {
     method: "POST",
     body: JSON.stringify({
@@ -625,7 +1148,7 @@ app.post("/auth/sign-in", async (c) => {
     }),
   });
 
-  const headers = new Headers({ location: response.ok ? "/" : "/sign-in" });
+  const headers = new Headers({ location: response.ok ? redirectTo : `/sign-in?redirectTo=${encodeURIComponent(redirectTo)}` });
   setAuthCookies(response, headers);
   const responseText = await response.text();
   const responseMessage = extractAuthMessage(responseText);

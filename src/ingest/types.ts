@@ -94,7 +94,7 @@ export type IngestResult = {
   warnings: string[];
 };
 
-export type PersistEntry = (userId: string, body: Record<string, unknown>) => Promise<void>;
+export type PersistEntry = (userId: string, body: Record<string, unknown>) => Promise<unknown>;
 
 export type IngestPersisters = {
   [K in IngestKind]: PersistEntry;

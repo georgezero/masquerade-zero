@@ -1,7 +1,7 @@
 import type { Viewer, HistoryItem, AppProfile } from "./lib/app.js";
 import { escapeHtml, formatDateTime } from "./lib/html.js";
 
-const ASSET_VERSION = "20260316-six-alpha-023";
+const ASSET_VERSION = "20260316-six-alpha-026";
 
 function avatarInitials(viewer: Viewer) {
   const first = viewer.profile?.firstName?.trim() || "";
@@ -22,7 +22,7 @@ function avatarInitials(viewer: Viewer) {
   return "P";
 }
 
-function headerActions(viewer: Viewer, route: "home" | "profile" | "view" | "edit" | "new" | "demo" | "sign-in") {
+function headerActions(viewer: Viewer, route: "home" | "profile" | "view" | "edit" | "new" | "demo" | "sign-in" | "journal") {
   if (viewer.role === "guest") {
     if (route === "sign-in") {
       return "";
@@ -301,11 +301,14 @@ export function entryLauncher() {
         <a href="/new/diet" class="flex min-h-12 items-center justify-center rounded-xl border border-amber-200/80 bg-amber-400/25 px-4 py-3 text-sm font-bold text-amber-50 shadow-[0_0_18px_rgba(251,191,36,0.45)] transition hover:bg-amber-400/35">Diet</a>
         <a href="/new/exercise" class="flex min-h-12 items-center justify-center rounded-xl border border-fuchsia-200/80 bg-fuchsia-400/25 px-4 py-3 text-sm font-bold text-fuchsia-50 shadow-[0_0_18px_rgba(232,121,249,0.45)] transition hover:bg-fuchsia-400/35">Exercise</a>
       </div>
+      <div class="mt-3">
+        <a href="/journal" class="inline-flex min-h-11 items-center justify-center rounded-xl border border-cyan-300/35 bg-cyan-500/10 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-cyan-100 transition hover:bg-cyan-500/20">Journal Ingest</a>
+      </div>
     </section>
   `;
 }
 
-export function authPanel(viewer: Viewer, hasFlash = false) {
+export function authPanel(viewer: Viewer, hasFlash = false, redirectTo = "/") {
   if (viewer.role !== "guest") {
     const name =
       [viewer.profile?.firstName, viewer.profile?.lastName].filter(Boolean).join(" ") ||
@@ -354,6 +357,7 @@ export function authPanel(viewer: Viewer, hasFlash = false) {
         </div>
         <form id="auth-form" method="post" action="/auth/sign-in" class="grid gap-3">
           <input type="hidden" name="authMode" value="signin" id="auth-mode-input" />
+          <input type="hidden" name="redirectTo" value="${escapeHtml(redirectTo)}" />
           <div id="auth-signup-name" class="hidden">
             <label class="grid gap-1 text-sm font-medium text-slate-300">Name
               <input id="auth-name-input" type="text" name="name" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2" />
@@ -478,7 +482,7 @@ export function profileForm(viewer: Viewer) {
 
 export function page(params: {
   viewer: Viewer;
-  route: "home" | "profile" | "view" | "edit" | "new" | "demo" | "sign-in";
+  route: "home" | "profile" | "view" | "edit" | "new" | "demo" | "sign-in" | "journal";
   flash?: string;
   bodyContent: string;
 }) {

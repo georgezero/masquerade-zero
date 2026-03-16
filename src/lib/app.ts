@@ -395,7 +395,8 @@ export async function createGoal(userId: string, body: Record<string, unknown>) 
   if (!db) { throw new Error("Database is not configured."); }
   const weekStart = normalizeRequiredText(body.weekStart, "Week start");
   const planText = normalizeRequiredText(body.planText, "Plan text");
-  await db.insert(goals).values({ planText, userId, weekStart });
+  const result = await db.insert(goals).values({ planText, userId, weekStart }).returning({ id: goals.id });
+  return result[0];
 }
 
 export async function updateGoal(userId: string, id: string, body: Record<string, unknown>) {
@@ -418,11 +419,12 @@ export async function createPractice(userId: string, body: Record<string, unknow
   if (!db) { throw new Error("Database is not configured."); }
   const date = normalizeRequiredDate(body.date);
   const workedOn = normalizeRequiredText(body.workedOn, "Worked on");
-  await db.insert(practices).values({
+  const result = await db.insert(practices).values({
     coachName: normalizeOptionalText(body.coachName) || null,
     createdAt: new Date(), date, notes: normalizeOptionalText(body.notes),
     userId, withCoach: Boolean(body.withCoach), workedOn,
-  });
+  }).returning({ id: practices.id });
+  return result[0];
 }
 
 export async function updatePractice(userId: string, id: string, body: Record<string, unknown>) {
@@ -448,10 +450,11 @@ export async function createMatch(userId: string, body: Record<string, unknown>)
   if (!db) { throw new Error("Database is not configured."); }
   const date = normalizeRequiredDate(body.date);
   const opponent = normalizeRequiredText(body.opponent, "Opponent");
-  await db.insert(matches).values({
+  const result = await db.insert(matches).values({
     createdAt: new Date(), date, notes: normalizeOptionalText(body.notes),
     opponent, score: normalizeOptionalText(body.score), userId,
-  });
+  }).returning({ id: matches.id });
+  return result[0];
 }
 
 export async function updateMatch(userId: string, id: string, body: Record<string, unknown>) {
@@ -475,7 +478,8 @@ export async function createDiet(userId: string, body: Record<string, unknown>) 
   if (!db) { throw new Error("Database is not configured."); }
   const date = normalizeRequiredDate(body.date);
   const summary = normalizeRequiredText(body.summary, "Summary");
-  await db.insert(diets).values({ createdAt: new Date(), date, summary, userId });
+  const result = await db.insert(diets).values({ createdAt: new Date(), date, summary, userId }).returning({ id: diets.id });
+  return result[0];
 }
 
 export async function updateDiet(userId: string, id: string, body: Record<string, unknown>) {
@@ -498,11 +502,12 @@ export async function createExercise(userId: string, body: Record<string, unknow
   if (!db) { throw new Error("Database is not configured."); }
   const date = normalizeRequiredDate(body.date);
   const durationMin = normalizeDuration(body.durationMin);
-  await db.insert(exercises).values({
+  const result = await db.insert(exercises).values({
     createdAt: new Date(), date, durationMin,
     exerciseType: normalizeExerciseType(body.exerciseType),
     notes: normalizeOptionalText(body.notes), userId,
-  });
+  }).returning({ id: exercises.id });
+  return result[0];
 }
 
 export async function updateExercise(userId: string, id: string, body: Record<string, unknown>) {

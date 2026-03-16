@@ -171,3 +171,54 @@ export const ingestRateLimits = pgTable(
     index("ingest_rate_limits_updated_at_idx").on(table.updatedAt),
   ],
 );
+
+export const journalSubmissions = pgTable(
+  "journal_submissions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id").notNull(),
+    rawText: text("raw_text").notNull(),
+    status: text("status").notNull().default("draft"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("journal_submissions_user_id_idx").on(table.userId),
+    index("journal_submissions_status_idx").on(table.status),
+  ],
+);
+
+export const journalSubmissionCandidates = pgTable(
+  "journal_submission_candidates",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    journalId: uuid("journal_id").notNull(),
+    candidateIndex: integer("candidate_index").notNull(),
+    kind: text("kind").notNull(),
+    confidence: integer("confidence").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    status: text("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("journal_submission_candidates_journal_id_idx").on(table.journalId),
+    uniqueIndex("journal_submission_candidates_journal_index_unique").on(table.journalId, table.candidateIndex),
+  ],
+);
+
+export const journalSubmissionEntries = pgTable(
+  "journal_submission_entries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    journalId: uuid("journal_id").notNull(),
+    candidateIndex: integer("candidate_index"),
+    kind: text("kind").notNull(),
+    entryId: text("entry_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("journal_submission_entries_journal_id_idx").on(table.journalId),
+    index("journal_submission_entries_entry_id_idx").on(table.entryId),
+  ],
+);
