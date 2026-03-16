@@ -1,7 +1,7 @@
 import type { Viewer, HistoryItem, AppProfile } from "./lib/app.js";
 import { escapeHtml, formatDateTime } from "./lib/html.js";
 
-const ASSET_VERSION = "20260316-six-alpha-017";
+const ASSET_VERSION = "20260316-six-alpha-019";
 
 function avatarInitials(viewer: Viewer) {
   const first = viewer.profile?.firstName?.trim() || "";
@@ -564,7 +564,7 @@ export function page(params: {
       </div>
     </header>
 
-    <main id="main-content" class="mx-auto grid w-full max-w-6xl gap-4 px-3 pb-4 pt-40 sm:px-6 sm:pb-6 sm:pt-48">
+    <main id="main-content" class="mx-auto grid w-full max-w-6xl gap-4 px-3 pb-4 pt-32 sm:px-6 sm:pb-6 sm:pt-48">
       ${flash ? `<section class="flash rounded-2xl border border-amber-300/30 bg-amber-500/10 p-4 text-sm text-amber-100">${escapeHtml(flash)}</section>` : ""}
       ${bodyContent}
     </main>
