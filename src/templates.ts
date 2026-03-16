@@ -334,13 +334,13 @@ export function authPanel(viewer: Viewer, hasFlash = false) {
 
   return `
     <section class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-white/10 p-4 shadow-neon sm:max-w-3xl sm:p-5" id="auth-panel">
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div>
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
           <p class="text-xs uppercase tracking-[0.28em] text-cyan-300/80">Access</p>
           <h2 id="auth-title" class="mt-1 text-xl font-bold tracking-tight text-white">Sign In</h2>
           <p id="auth-subtitle" class="mt-1 text-sm text-slate-300">Create an account or sign in</p>
         </div>
-        <div class="flex flex-wrap items-start justify-end gap-2">
+        <div class="flex shrink-0 items-start justify-end gap-2">
           <button id="auth-cancel-btn" type="button" class="${hasFlash ? "" : "hidden "}rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Cancel</button>
         </div>
       </div>
