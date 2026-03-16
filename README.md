@@ -301,6 +301,13 @@ npm run test       # Unit tests
 npm run test:ingest-api  # Local integration checks for /api/ingest (401/200/409/429)
 ```
 
+Smoke scripts:
+
+```bash
+INGEST_KEY="<api-key>" ./scripts/smoke-ingest-api.sh
+APP_URL="https://tennis-zero-six-alpha-ingest.fff.ad" INGEST_KEY="<api-key>" ./scripts/smoke-ingest-api-cloudflare.sh
+```
+
 ### Database Migrations
 
 ```bash
@@ -345,6 +352,29 @@ Generate a stronger key:
 
 ```bash
 openssl rand -hex 32
+```
+
+`INGEST_API_KEY` vs `INGEST_KEY`:
+- `INGEST_API_KEY` is the server-side env var your app reads.
+- `INGEST_KEY` is only a shell variable used by the smoke-test scripts as the client credential.
+
+If you run the app via the user `systemd` service on this machine, edit:
+
+```bash
+/home/george/Downloads/src/ai/openai/tennis-zero-six-alpha-ingest/.runtime/service.env
+```
+
+Example:
+
+```bash
+PORT=3002
+INGEST_API_KEY=tz6_ingest_local_test_1234567890abcdef
+```
+
+Then restart:
+
+```bash
+systemctl --user restart tennis-zero-six-alpha-ingest-app.service
 ```
 
 ---
