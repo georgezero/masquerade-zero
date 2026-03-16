@@ -149,7 +149,12 @@ function initAuthToggle() {
       if (cancelBtn) cancelBtn.classList.remove("hidden");
       if (demoContent) demoContent.classList.add("hidden");
       signinOpen.classList.add("hidden");
-      if (authPanel) authPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (authPanel) {
+        const header = document.querySelector(".topbar");
+        const headerHeight = header instanceof HTMLElement ? header.offsetHeight : 0;
+        const top = authPanel.getBoundingClientRect().top + window.scrollY - headerHeight - 10;
+        window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+      }
       return;
     }
 
