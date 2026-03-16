@@ -206,6 +206,16 @@ function inputValue(value: unknown) {
   return escapeHtml(String(value ?? ""));
 }
 
+function journalErrorHtml(message: string) {
+  return `<section class="glass mx-auto mt-3 w-full max-w-[24.5rem] rounded-2xl border border-rose-300/30 bg-rose-500/10 p-4 text-sm text-rose-100 sm:max-w-3xl">${escapeHtml(message)}</section>`;
+}
+
+let lastIngestCleanupAt = 0;
+
+function logIngestEvent(event: string, details: Record<string, unknown>) {
+  console.info("[ingest]", JSON.stringify({ event, ...details }));
+}
+
 type JournalStatus = "draft" | "finalized";
 
 type JournalDraft = {
@@ -785,9 +795,13 @@ app.post("/api/journal/finalize", async (c) => {
   const body = await c.req.parseBody();
   const journalId = String(body.journalId ?? "").trim();
   if (!journalId) {
-    throw new Error("journalId is required.");
+    return c.html(journalErrorHtml("journalId is required."), 400);
   }
-  await finalizeJournal(viewer.authUser.id, journalId);
+  try {
+    await finalizeJournal(viewer.authUser.id, journalId);
+  } catch {
+    return c.html(journalErrorHtml("Journal not found."), 404);
+  }
 
   const rows = await db
     ?.select({
@@ -812,10 +826,10 @@ app.post("/api/journal/confirm", async (c) => {
   const candidateIndexRaw = Number(body.candidateIndex ?? "");
   const kind = String(body.kind ?? "").trim();
   if (!journalId) {
-    throw new Error("journalId is required.");
+    return c.html(journalErrorHtml("journalId is required."), 400);
   }
   if (!isValidKind(kind)) {
-    throw new Error("Unknown entry type.");
+    return c.html(journalErrorHtml("Unknown entry type."), 400);
   }
   const fields = selectJournalFields(kind, body);
 
@@ -825,12 +839,12 @@ app.post("/api/journal/confirm", async (c) => {
     items: [{ kind, fields, source: "journal-ai" }],
   });
   if (!validated.accepted || validated.candidates.length === 0) {
-    throw new Error(validated.errors[0]?.message || "Invalid journal candidate.");
+    return c.html(journalErrorHtml(validated.errors[0]?.message || "Invalid journal candidate."), 400);
   }
 
   const journal = await getJournalById(viewer.authUser.id, journalId);
   if (!journal) {
-    throw new Error("Journal not found.");
+    return c.html(journalErrorHtml("Journal not found."), 404);
   }
   let finalizedJournal = journal;
   if (journal.status !== "finalized") {
@@ -840,7 +854,7 @@ app.post("/api/journal/confirm", async (c) => {
   const created = await journalCreators[kind](viewer.authUser.id, validated.candidates[0]!.fields as Record<string, unknown>);
   const entryId = typeof created === "object" && created && "id" in created ? String((created as { id: unknown }).id) : "";
   if (!entryId) {
-    throw new Error("Could not determine created entry id.");
+    return c.html(journalErrorHtml("Could not determine created entry id."), 500);
   }
 
   if (db) {
@@ -871,7 +885,12 @@ app.post("/api/journal/dismiss", async (c) => {
   const journalId = String(body.journalId ?? "").trim();
   const candidateIndex = Number(body.candidateIndex ?? "");
   if (!journalId || !Number.isFinite(candidateIndex)) {
-    throw new Error("journalId and candidateIndex are required.");
+    return c.html(journalErrorHtml("journalId and candidateIndex are required."), 400);
+  }
+
+  const journal = await getJournalById(viewer.authUser.id, journalId);
+  if (!journal) {
+    return c.html(journalErrorHtml("Journal not found."), 404);
   }
 
   if (db) {
@@ -886,18 +905,31 @@ app.post("/api/journal/dismiss", async (c) => {
 
 // Ingestion API: POST /api/ingest
 app.post("/api/ingest", async (c) => {
+  const nowMs = Date.now();
+  if (nowMs - lastIngestCleanupAt >= env.INGEST_CLEANUP_INTERVAL_MS) {
+    lastIngestCleanupAt = nowMs;
+    try {
+      await ingestRuntime.cleanupExpiredData(nowMs);
+    } catch (error) {
+      logIngestEvent("cleanup_error", { message: error instanceof Error ? error.message : "unknown" });
+    }
+  }
+
   const contentLength = Number(c.req.header("content-length") || "0");
   if (Number.isFinite(contentLength) && contentLength > 100_000) {
+    logIngestEvent("request_rejected", { reason: "payload_too_large", contentLength });
     return c.json({ error: "Request body too large." }, 413);
   }
 
   if (!ingestApiConfigured) {
+    logIngestEvent("request_rejected", { reason: "not_configured" });
     return c.json({ error: "Ingest API is not configured." }, 503);
   }
 
   const providedApiKey = ingestApiAuthKey(c as AppContext);
   const resolvedApiKey = resolveIngestApiKey(providedApiKey);
   if (!resolvedApiKey) {
+    logIngestEvent("auth_failed", { reason: "invalid_api_key" });
     return c.json({ error: "Unauthorized." }, 401);
   }
 
@@ -905,17 +937,20 @@ app.post("/api/ingest", async (c) => {
   try {
     requestBody = await c.req.json();
   } catch {
+    logIngestEvent("request_rejected", { reason: "invalid_json", apiKeyId: resolvedApiKey.id });
     return c.json({ error: "Request body must be valid JSON." }, 400);
   }
 
   const parsed = ingestApiRequestSchema.safeParse(requestBody);
   if (!parsed.success) {
     const message = parsed.error.issues[0]?.message ?? "Invalid ingest request.";
+    logIngestEvent("request_rejected", { reason: "invalid_contract", apiKeyId: resolvedApiKey.id, message });
     return c.json({ error: message }, 400);
   }
 
   const request = parsed.data;
   if (Array.isArray(resolvedApiKey.allowedUserIds) && !resolvedApiKey.allowedUserIds.includes(request.userId)) {
+    logIngestEvent("request_rejected", { reason: "user_forbidden", apiKeyId: resolvedApiKey.id, userId: request.userId });
     return c.json({ error: "Forbidden for requested userId." }, 403);
   }
 
@@ -925,9 +960,15 @@ app.post("/api/ingest", async (c) => {
       ? keyHasAnyScope(resolvedApiKey, ["ingest:write"])
       : keyHasAnyScope(resolvedApiKey, ["ingest:dryrun", "ingest:write"]);
     if (!permitted) {
+      logIngestEvent("request_rejected", {
+        reason: "missing_scope",
+        apiKeyId: resolvedApiKey.id,
+        requiredScope: needsWrite ? "ingest:write" : "ingest:dryrun",
+      });
       return c.json({ error: needsWrite ? "Missing scope: ingest:write." : "Missing scope: ingest:dryrun." }, 403);
     }
   } else if (!keyHasAnyScope(resolvedApiKey, ["ingest:dryrun", "ingest:write"])) {
+    logIngestEvent("request_rejected", { reason: "missing_scope", apiKeyId: resolvedApiKey.id, requiredScope: "ingest:dryrun" });
     return c.json({ error: "Missing scope: ingest:dryrun." }, 403);
   }
 
@@ -940,15 +981,18 @@ app.post("/api/ingest", async (c) => {
   if (idempotencyCompositeKey) {
     const idemStatus = await ingestRuntime.beginIdempotentRequest(idempotencyCompositeKey, requestFingerprint);
     if (idemStatus.state === "replay") {
+      logIngestEvent("idempotency_replay", { apiKeyId: resolvedApiKey.id, userId: request.userId });
       return new Response(JSON.stringify(idemStatus.responseBody), {
         status: idemStatus.statusCode,
         headers: { "content-type": "application/json; charset=utf-8" },
       });
     }
     if (idemStatus.state === "in_flight") {
+      logIngestEvent("request_rejected", { reason: "idempotency_in_flight", apiKeyId: resolvedApiKey.id, userId: request.userId });
       return c.json({ error: "Request with this idempotency key is already in progress." }, 409);
     }
     if (idemStatus.state === "conflict") {
+      logIngestEvent("request_rejected", { reason: "idempotency_conflict", apiKeyId: resolvedApiKey.id, userId: request.userId });
       return c.json({ error: "Idempotency key already used with a different payload." }, 409);
     }
   }
@@ -956,6 +1000,7 @@ app.post("/api/ingest", async (c) => {
   const rateLimit = await ingestRuntime.checkRateLimit(clientKey);
   if (!rateLimit.allowed) {
     c.header("Retry-After", String(rateLimit.retryAfterSec));
+    logIngestEvent("request_rejected", { reason: "rate_limited", apiKeyId: resolvedApiKey.id, userId: request.userId });
     return c.json({ error: "Rate limit exceeded." }, 429);
   }
 
@@ -970,6 +1015,7 @@ app.post("/api/ingest", async (c) => {
     if (idempotencyCompositeKey) {
       await ingestRuntime.completeIdempotentRequest(idempotencyCompositeKey, requestFingerprint, body, 501);
     }
+    logIngestEvent("request_completed", { mode: request.mode, status: 501, apiKeyId: resolvedApiKey.id, userId: request.userId });
     return c.json(body, 501);
   }
 
@@ -1001,6 +1047,17 @@ app.post("/api/ingest", async (c) => {
   if (idempotencyCompositeKey) {
     await ingestRuntime.completeIdempotentRequest(idempotencyCompositeKey, requestFingerprint, body, 200);
   }
+
+  logIngestEvent("request_completed", {
+    mode: request.mode,
+    status: 200,
+    apiKeyId: resolvedApiKey.id,
+    userId: request.userId,
+    accepted: result.accepted,
+    candidateCount: result.candidates.length,
+    errorCount: result.errors.length,
+    createdCount: result.created.length,
+  });
 
   return c.json(body);
 });

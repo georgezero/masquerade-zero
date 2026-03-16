@@ -17,6 +17,7 @@ const envSchema = z.object({
   NEON_AUTH_COOKIE_SECRET: z.string().optional(),
   INGEST_API_KEY: z.string().min(1).optional(),
   INGEST_API_KEYS_JSON: z.string().optional(),
+  INGEST_CLEANUP_INTERVAL_MS: z.coerce.number().int().positive().default(60 * 1000),
   INGEST_IDEMPOTENCY_TTL_MS: z.coerce.number().int().positive().default(60 * 60 * 1000),
   INGEST_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(60),
   INGEST_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60 * 1000),

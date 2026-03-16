@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "../db/index.js";
-import { ingestIdempotency } from "../db/schema.js";
+import { ingestIdempotency, ingestRateLimits } from "../db/schema.js";
 
 export type RateLimitResult =
   | { allowed: true }
@@ -21,6 +21,7 @@ export type IdempotencyStartResult =
 export type IngestRuntime = {
   beginIdempotentRequest(key: string, fingerprint: string, nowMs?: number): Promise<IdempotencyStartResult>;
   checkRateLimit(key: string, nowMs?: number): Promise<RateLimitResult>;
+  cleanupExpiredData(nowMs?: number): Promise<void>;
   completeIdempotentRequest(
     key: string,
     fingerprint: string,
@@ -118,6 +119,19 @@ export class InMemoryIngestRuntime implements IngestRuntime {
       status: "completed",
       statusCode,
     });
+  }
+
+  async cleanupExpiredData(nowMs = Date.now()): Promise<void> {
+    for (const [key, value] of this.idempotency.entries()) {
+      if (value.expiresAtMs <= nowMs) {
+        this.idempotency.delete(key);
+      }
+    }
+    for (const [key, value] of this.rateLimit.entries()) {
+      if (value.resetAtMs <= nowMs) {
+        this.rateLimit.delete(key);
+      }
+    }
   }
 }
 
@@ -267,6 +281,19 @@ export class PostgresIngestRuntime implements IngestRuntime {
           eq(ingestIdempotency.status, "in_flight"),
         ),
       );
+  }
+
+  async cleanupExpiredData(nowMs = Date.now()): Promise<void> {
+    if (!this.hasDb()) {
+      await this.fallback.cleanupExpiredData(nowMs);
+      return;
+    }
+
+    const now = new Date(nowMs);
+    const rateLimitCutoff = new Date(nowMs - this.rateLimitWindowMs * 2);
+
+    await db!.delete(ingestIdempotency).where(sql`${ingestIdempotency.expiresAt} <= ${now}`);
+    await db!.delete(ingestRateLimits).where(sql`${ingestRateLimits.updatedAt} <= ${rateLimitCutoff}`);
   }
 
   private async loadCurrentIdempotencyRow(key: string): Promise<PostgresIdempotencyRow | null> {

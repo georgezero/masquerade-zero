@@ -300,6 +300,7 @@ npm run check      # Type-check without emitting
 npm run test       # Unit tests
 npm run test:ingest-api  # Local integration checks for /api/ingest (401/200/409/429)
 npm run test:ingest-api:db  # DB-backed idempotency checks (replay + expiry)
+npm run test:ingest-api:scopes  # Scoped-key checks (200/403 coverage)
 ```
 
 Smoke scripts:
@@ -333,9 +334,10 @@ node scripts/migrate.mjs --mark-applied 0001_initial.sql
 | `NEON_AUTH_COOKIE_SECRET` | No | - | Cookie signing secret for auth |
 | `INGEST_API_KEY` | No* | - | Single-key fallback for ingest auth (full ingest scopes) |
 | `INGEST_API_KEYS_JSON` | No* | - | Preferred multi-key JSON config with per-key scopes and optional `allowedUserIds` |
+| `INGEST_CLEANUP_INTERVAL_MS` | No | `60000` | Interval for ingest runtime cleanup of expired idempotency/rate-limit state |
 | `INGEST_RATE_LIMIT_WINDOW_MS` | No | `60000` | Fixed-window rate-limit window in milliseconds |
 | `INGEST_RATE_LIMIT_MAX` | No | `60` | Max ingest requests per window per API key + userId |
-| `INGEST_IDEMPOTENCY_TTL_MS` | No | `3600000` | In-memory idempotency cache TTL (milliseconds) |
+| `INGEST_IDEMPOTENCY_TTL_MS` | No | `3600000` | Idempotency TTL (used for DB + fallback memory runtime) |
 | `APP_URL` | No | `http://localhost:3001` | Public URL of the application |
 | `PORT` | No | `3001` | Server port |
 
@@ -462,7 +464,7 @@ Status behavior:
 - `413`: request body too large
 - `429`: rate limit exceeded (`Retry-After` header set)
 - `501`: freeform mode not yet implemented
-- `503`: ingest API not configured (`INGEST_API_KEY` missing)
+- `503`: ingest API not configured (`INGEST_API_KEY` / `INGEST_API_KEYS_JSON` missing)
 
 Idempotency notes:
 - Provide `idempotencyKey` to enable replay safety.

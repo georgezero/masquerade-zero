@@ -12,7 +12,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node scripts/migrate.mjs",
     "test:ingest-api": "tsx scripts/test-ingest-api.ts",
-    "test:ingest-api:db": "tsx scripts/test-ingest-api-db.ts"
+    "test:ingest-api:db": "tsx scripts/test-ingest-api-db.ts",
+    "test:ingest-api:scopes": "tsx scripts/test-ingest-api-scopes.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.4",
