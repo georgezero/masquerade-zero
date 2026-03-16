@@ -4,6 +4,7 @@ import {
   integer,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -140,4 +141,33 @@ export const exercises = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [index('exercises_user_id_idx').on(table.userId)],
+);
+
+export const ingestIdempotency = pgTable(
+  "ingest_idempotency",
+  {
+    idempotencyKey: text("idempotency_key").primaryKey(),
+    requestHash: text("request_hash").notNull(),
+    status: text("status").notNull(),
+    statusCode: integer("status_code"),
+    responseBody: text("response_body"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("ingest_idempotency_expires_at_idx").on(table.expiresAt)],
+);
+
+export const ingestRateLimits = pgTable(
+  "ingest_rate_limits",
+  {
+    bucketKey: text("bucket_key").notNull(),
+    windowStartMs: text("window_start_ms").notNull(),
+    count: integer("count").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.bucketKey] }),
+    index("ingest_rate_limits_updated_at_idx").on(table.updatedAt),
+  ],
 );

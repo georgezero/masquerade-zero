@@ -440,7 +440,8 @@ Status behavior:
 
 Idempotency notes:
 - Provide `idempotencyKey` to enable replay safety.
-- Current implementation is **in-memory** (single-process best effort), controlled by `INGEST_IDEMPOTENCY_TTL_MS`.
+- With `DATABASE_URL` configured, idempotency + rate-limit state is stored durably in Postgres.
+- If DB is unavailable, it falls back to in-memory behavior for dev.
 - A repeated request with the same key + same payload returns cached response.
 - Same key + different payload returns `409`.
 

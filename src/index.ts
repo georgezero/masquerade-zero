@@ -25,7 +25,7 @@ import {
   type Viewer,
 } from "./lib/app.js";
 import { IngestService } from "./ingest/service.js";
-import { InMemoryIngestRuntime } from "./ingest/runtime.js";
+import { PostgresIngestRuntime } from "./ingest/runtime.js";
 import { ingestApiRequestSchema } from "./ingest/schemas.js";
 import type { StructuredIngestInput } from "./ingest/types.js";
 import { authConfigured, env, ingestApiConfigured } from "./env.js";
@@ -172,7 +172,7 @@ function apiKeysMatch(expected: string, actual: string | null): boolean {
 
 // Dispatches update/delete based on kind
 const ingestService = new IngestService();
-const ingestRuntime = new InMemoryIngestRuntime(
+const ingestRuntime = new PostgresIngestRuntime(
   env.INGEST_RATE_LIMIT_WINDOW_MS,
   env.INGEST_RATE_LIMIT_MAX,
   env.INGEST_IDEMPOTENCY_TTL_MS,
@@ -389,7 +389,7 @@ app.post("/api/ingest", async (c) => {
     : null;
 
   if (idempotencyCompositeKey) {
-    const idemStatus = ingestRuntime.beginIdempotentRequest(idempotencyCompositeKey, requestFingerprint);
+    const idemStatus = await ingestRuntime.beginIdempotentRequest(idempotencyCompositeKey, requestFingerprint);
     if (idemStatus.state === "replay") {
       return new Response(JSON.stringify(idemStatus.responseBody), {
         status: idemStatus.statusCode,
@@ -404,7 +404,7 @@ app.post("/api/ingest", async (c) => {
     }
   }
 
-  const rateLimit = ingestRuntime.checkRateLimit(clientKey);
+  const rateLimit = await ingestRuntime.checkRateLimit(clientKey);
   if (!rateLimit.allowed) {
     c.header("Retry-After", String(rateLimit.retryAfterSec));
     return c.json({ error: "Rate limit exceeded." }, 429);
@@ -419,7 +419,7 @@ app.post("/api/ingest", async (c) => {
       warnings: [],
     };
     if (idempotencyCompositeKey) {
-      ingestRuntime.completeIdempotentRequest(idempotencyCompositeKey, requestFingerprint, body, 501);
+      await ingestRuntime.completeIdempotentRequest(idempotencyCompositeKey, requestFingerprint, body, 501);
     }
     return c.json(body, 501);
   }
@@ -445,12 +445,12 @@ app.post("/api/ingest", async (c) => {
   const body = {
     ...result,
     warnings: request.idempotencyKey
-      ? [...result.warnings, "Idempotency key accepted and cached in-memory for replay."]
+      ? [...result.warnings, "Idempotency key accepted and cached for replay."]
       : result.warnings,
   };
 
   if (idempotencyCompositeKey) {
-    ingestRuntime.completeIdempotentRequest(idempotencyCompositeKey, requestFingerprint, body, 200);
+    await ingestRuntime.completeIdempotentRequest(idempotencyCompositeKey, requestFingerprint, body, 200);
   }
 
   return c.json(body);
