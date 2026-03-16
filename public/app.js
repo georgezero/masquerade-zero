@@ -448,7 +448,7 @@ function renderDemoBanner() {
   return `
     <section class="mx-auto w-full max-w-[24.5rem] rounded-2xl border border-amber-200/25 bg-[linear-gradient(155deg,rgba(120,53,15,0.35),rgba(51,65,85,0.68))] p-4 shadow-[0_0_0_1px_rgba(251,191,36,0.16),0_0_26px_rgba(245,158,11,0.12)] sm:max-w-3xl sm:p-5">
       <p class="text-xs uppercase tracking-[0.28em] text-amber-300/85">Demo Mode</p>
-      <p class="mt-2 text-sm text-amber-100/80">Explore Tennis Zero with using demo data</p>
+      <p class="mt-2 text-sm text-amber-100/80">Explore Tennis Zero with demo data</p>
       <p class="mt-3 inline-flex rounded-full border border-amber-200/25 bg-amber-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-100/80">Local browser data only</p>
     </section>
   `;

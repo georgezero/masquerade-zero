@@ -1,7 +1,7 @@
 import type { Viewer, HistoryItem, AppProfile } from "./lib/app.js";
 import { escapeHtml, formatDateTime } from "./lib/html.js";
 
-const ASSET_VERSION = "20260316-six-alpha-021";
+const ASSET_VERSION = "20260316-six-alpha-022";
 
 function avatarInitials(viewer: Viewer) {
   const first = viewer.profile?.firstName?.trim() || "";
@@ -26,7 +26,7 @@ function headerActions(viewer: Viewer) {
   if (viewer.role === "guest") {
     return `
       <div class="flex items-center gap-2">
-        <a id="signin-open" href="/sign-in" class="shrink-0 whitespace-nowrap rounded-xl border border-cyan-200/80 bg-cyan-400/25 px-4 py-2 text-sm font-bold text-cyan-50 shadow-[0_0_18px_rgba(34,211,238,0.35)] transition hover:bg-cyan-400/35">Sign in</a>
+        <a id="signin-open" href="/sign-in" class="shrink-0 whitespace-nowrap rounded-xl border border-cyan-200/80 bg-cyan-400/25 px-3 py-1.5 text-xs font-bold text-cyan-50 shadow-[0_0_18px_rgba(34,211,238,0.35)] transition hover:bg-cyan-400/35 sm:px-4 sm:py-2 sm:text-sm">Sign in</a>
       </div>
     `;
   }
@@ -547,24 +547,24 @@ export function page(params: {
     </div>
 
     <header class="topbar fixed inset-x-0 top-0 z-50 border-b border-white/10 bg-slate-950/85 backdrop-blur">
-      <div class="mx-auto flex w-full max-w-[22rem] items-start justify-between gap-4 px-3 py-4 sm:max-w-6xl sm:px-6 sm:py-6">
-        <div class="flex items-start gap-3">
+      <div class="mx-auto flex w-full max-w-[22rem] items-start justify-between gap-2 px-3 py-4 sm:max-w-6xl sm:gap-4 sm:px-6 sm:py-6">
+        <div class="flex min-w-0 items-start gap-2 sm:gap-3">
           <a class="brand-lockup shrink-0" href="/">
             <div class="brand-mark">6A</div>
           </a>
-          <div>
+          <div class="min-w-0">
             <a href="/" class="brand-name" style="text-decoration:none">Six Alpha</a>
             <h1 class="mt-1 text-xl font-black tracking-tight sm:text-4xl">
               <a href="/" class="text-white transition hover:text-cyan-200">Tennis Zero</a>
             </h1>
-            <p class="mt-1 max-w-2xl whitespace-nowrap text-sm text-slate-300 sm:text-base">Zero in on your tennis journey</p>
+            <p class="mt-1 max-w-2xl truncate text-sm text-slate-300 sm:text-base">Zero in on your tennis</p>
           </div>
         </div>
         ${headerActions(viewer)}
       </div>
     </header>
 
-    <main id="main-content" class="mx-auto grid w-full max-w-6xl gap-4 px-3 pb-4 pt-32 sm:px-6 sm:pb-6 sm:pt-48">
+    <main id="main-content" class="mx-auto grid w-full max-w-6xl gap-4 px-3 pb-4 pt-40 sm:px-6 sm:pb-6 sm:pt-40">
       ${flash ? `<section class="flash rounded-2xl border border-amber-300/30 bg-amber-500/10 p-4 text-sm text-amber-100">${escapeHtml(flash)}</section>` : ""}
       ${bodyContent}
     </main>
