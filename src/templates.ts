@@ -564,7 +564,7 @@ export function page(params: {
       </div>
     </header>
 
-    <main id="main-content" class="mx-auto grid w-full max-w-6xl gap-4 px-3 pb-4 pt-40 sm:px-6 sm:pb-6 sm:pt-40">
+    <main id="main-content" class="mx-auto grid w-full max-w-6xl gap-4 px-3 pb-4 pt-32 sm:px-6 sm:pb-6 sm:pt-40">
       ${flash ? `<section class="flash rounded-2xl border border-amber-300/30 bg-amber-500/10 p-4 text-sm text-amber-100">${escapeHtml(flash)}</section>` : ""}
       ${bodyContent}
     </main>
