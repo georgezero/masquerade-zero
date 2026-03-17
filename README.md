@@ -359,6 +359,7 @@ node scripts/migrate.mjs --mark-applied 0001_initial.sql
 | `JOURNAL_LLM_API_KEY` | No | - | API key sent to OpenAI-compatible provider |
 | `JOURNAL_LLM_MODEL` | No | - | Primary model id used by default for journal extraction |
 | `JOURNAL_LLM_SECONDARY_MODEL` | No | - | Secondary model id available in selector and compare mode |
+| `JOURNAL_LLM_TERTIARY_MODEL` | No | - | Optional third model id available in selector and compare mode |
 | `JOURNAL_LLM_TEST_PREVIEW_KEY` | No | - | Enables `/api/journal/preview-test` JSON endpoint for no-auth local testing |
 | `JOURNAL_LLM_TWO_PASS` | No | `false` | Enables 2-pass extraction pipeline (recall pass + schema mapping pass) |
 | `JOURNAL_LLM_TIMEOUT_MS` | No | `12000` | Timeout for LLM extraction request |
@@ -439,7 +440,8 @@ JOURNAL_LLM_PROVIDER=openai-compatible
 JOURNAL_LLM_BASE_URL=https://mango.fff.ad/v1
 JOURNAL_LLM_API_KEY=lmstudio
 JOURNAL_LLM_MODEL=openai/gpt-oss-20b
-JOURNAL_LLM_SECONDARY_MODEL=qwen/qwen3.5-9b
+JOURNAL_LLM_SECONDARY_MODEL=qwen3.5-9b-mlx
+JOURNAL_LLM_TERTIARY_MODEL=qwen3.5-4b-mlx
 JOURNAL_LLM_TEST_PREVIEW_KEY=local-journal-test-key
 JOURNAL_LLM_TWO_PASS=false
 JOURNAL_LLM_TIMEOUT_MS=12000
@@ -448,7 +450,8 @@ JOURNAL_LLM_MAX_INPUT_CHARS=12000
 
 Behavior:
 - Primary model: `JOURNAL_LLM_MODEL` (`openai/gpt-oss-20b` in the example above).
-- Secondary model: `JOURNAL_LLM_SECONDARY_MODEL` (`qwen/qwen3.5-9b` in the example above).
+- Secondary model: `JOURNAL_LLM_SECONDARY_MODEL` (`qwen3.5-9b-mlx` in the example above).
+- Tertiary model: `JOURNAL_LLM_TERTIARY_MODEL` (`qwen3.5-4b-mlx` in the example above).
 - `/api/journal/preview` tries LLM extraction first.
 - `JOURNAL_LLM_TWO_PASS=true` switches to a two-step pipeline: pass 1 recall candidates, pass 2 strict schema mapping.
 - LLM output still passes the existing ingest validation dry-run.
@@ -494,6 +497,7 @@ Rules:
 Reference docs:
 - Prompt used for prose extraction with `openai/gpt-oss-20b`: `docs/journal-llm-prompt-gpt-oss-20b.md`
 - Best-fit prompt A/B benchmark summary: `docs/journal-llm-best-fit-ab-benchmark.md`
+  - Includes follow-up `qwen3.5-9b-mlx` and `qwen3.5-4b-mlx` experiment notes and outcomes.
 - Prose sample capture summary (`openai/gpt-oss-20b`): `docs/journal-llm-prose-capture-summary-gpt-oss-20b.md`
 - Qwen 9B benchmark (`/no_think` vs default, plus openai comparison): `docs/journal-llm-qwen9b-no-think-benchmark.md`
 - API/script testing guide: `docs/journal-llm-api-testing.md`

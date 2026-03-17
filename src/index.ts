@@ -212,7 +212,7 @@ function journalErrorHtml(message: string) {
 }
 
 function getJournalModelOptions() {
-  const models = [env.JOURNAL_LLM_MODEL, env.JOURNAL_LLM_SECONDARY_MODEL]
+  const models = [env.JOURNAL_LLM_MODEL, env.JOURNAL_LLM_SECONDARY_MODEL, env.JOURNAL_LLM_TERTIARY_MODEL]
     .map((value) => value?.trim())
     .filter((value): value is string => Boolean(value));
   return Array.from(new Set(models));

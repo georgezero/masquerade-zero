@@ -56,7 +56,7 @@ This mode calls:
 ## Useful overrides
 
 ```bash
-MODEL='qwen/qwen3.5-9b'
+MODEL='qwen3.5-9b-mlx'
 COMPARE_MODELS=false
 SAMPLES_FILE='sample-data/journal-llm-samples.json'
 OUT_DIR='.runtime/journal-llm-sample-results'
