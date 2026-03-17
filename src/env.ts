@@ -29,6 +29,7 @@ const envSchema = z.object({
   JOURNAL_LLM_MODEL: z.string().min(1).optional(),
   JOURNAL_LLM_SECONDARY_MODEL: z.string().min(1).optional(),
   JOURNAL_LLM_TEST_PREVIEW_KEY: z.string().min(1).optional(),
+  JOURNAL_LLM_TWO_PASS: z.coerce.boolean().default(false),
   JOURNAL_LLM_PROVIDER: z.enum(["openai-compatible"]).default("openai-compatible"),
   JOURNAL_LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
   PORT: z.coerce.number().int().positive().default(3001),
