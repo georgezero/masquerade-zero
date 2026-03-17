@@ -160,7 +160,7 @@ export function parseFreeformJournalToStructuredItems(text: string): StructuredI
       confidence: hasNamedFields ? 0.85 : hasSemicolon ? 0.7 : 0.65,
       fields,
       kind,
-      source: "journal-ai",
+      source: "journal-fallback",
       warnings,
     });
   }

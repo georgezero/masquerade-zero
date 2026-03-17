@@ -34,10 +34,11 @@ import { db } from "./db/index.js";
 import { journalSubmissionCandidates, journalSubmissionEntries, journalSubmissions } from "./db/schema.js";
 import { IngestService } from "./ingest/service.js";
 import { parseFreeformJournalToStructuredItems } from "./ingest/freeform.js";
+import { extractJournalCandidatesLLM } from "./ingest/llm.js";
 import { PostgresIngestRuntime } from "./ingest/runtime.js";
 import { ingestApiRequestSchema } from "./ingest/schemas.js";
-import type { IngestItem, IngestValidationError, StructuredIngestInput } from "./ingest/types.js";
-import { authConfigured, env, ingestApiConfigured, ingestApiKeys, type IngestApiKeyRecord } from "./env.js";
+import type { IngestItem, IngestResult, IngestValidationError, StructuredIngestInput } from "./ingest/types.js";
+import { authConfigured, env, ingestApiConfigured, ingestApiKeys, journalLlmConfigured, journalLlmEnabled, journalLlmTestPreviewEnabled, type IngestApiKeyRecord } from "./env.js";
 import { authJson, getAuthSession, proxyAuthRequest, setAuthCookies } from "./lib/auth.js";
 import { escapeHtml } from "./lib/html.js";
 import {
@@ -210,6 +211,51 @@ function journalErrorHtml(message: string) {
   return `<section class="glass mx-auto mt-3 w-full max-w-[24.5rem] rounded-2xl border border-rose-300/30 bg-rose-500/10 p-4 text-sm text-rose-100 sm:max-w-3xl">${escapeHtml(message)}</section>`;
 }
 
+function getJournalModelOptions() {
+  const models = [env.JOURNAL_LLM_MODEL, env.JOURNAL_LLM_SECONDARY_MODEL]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  return Array.from(new Set(models));
+}
+
+function resolveJournalSelectedModel(requested?: string) {
+  const available = getJournalModelOptions();
+  const normalized = requested?.trim() ?? "";
+  if (normalized && available.includes(normalized)) {
+    return normalized;
+  }
+  return available[0] ?? "";
+}
+
+function renderJournalLlmControls(params?: { compareModels?: boolean; finalized?: boolean; selectedModel?: string }) {
+  const compareModels = Boolean(params?.compareModels);
+  const finalized = Boolean(params?.finalized);
+  const selectedModel = params?.selectedModel ?? resolveJournalSelectedModel();
+  const modelOptions = getJournalModelOptions();
+  const disabledAttr = finalized ? " disabled" : "";
+
+  if (!journalLlmEnabled) {
+    return `<section class="rounded-xl border border-amber-300/20 bg-amber-500/10 p-3 text-xs text-amber-100">LLM extraction is disabled or not configured. Preview will use deterministic parser fallback.</section>`;
+  }
+
+  return `
+    <section class="rounded-xl border border-cyan-300/20 bg-slate-900/40 p-3">
+      <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+        <label class="grid gap-1 text-sm font-medium text-slate-300">Model
+          <select id="journal-model-select" name="journalModel"${disabledAttr} class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2">
+            ${modelOptions.map((model) => `<option value="${escapeHtml(model)}"${model === selectedModel ? " selected" : ""}>${escapeHtml(model)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-300">
+          <input id="journal-compare-models" type="checkbox" name="compareModels" value="true"${compareModels ? " checked" : ""}${disabledAttr} class="h-4 w-4 rounded border-slate-500 bg-slate-800" />
+          Compare models
+        </label>
+      </div>
+      <p class="mt-2 text-xs text-slate-400">Use "Compare models" to see latency and candidate stats for both configured models while previewing with the selected model.</p>
+    </section>
+  `;
+}
+
 let lastIngestCleanupAt = 0;
 
 function logIngestEvent(event: string, details: Record<string, unknown>) {
@@ -326,10 +372,12 @@ async function finalizeJournal(userId: string, journalId: string): Promise<Journ
   return { id: rows[0].id, rawText: rows[0].rawText, status: rows[0].status as JournalStatus };
 }
 
-function journalShell(options?: { journalId?: string; rawText?: string; finalized?: boolean }) {
+function journalShell(options?: { compareModels?: boolean; journalId?: string; rawText?: string; finalized?: boolean; selectedModel?: string }) {
   const journalId = options?.journalId ?? "";
   const rawText = options?.rawText ?? "";
   const finalized = Boolean(options?.finalized);
+  const compareModels = Boolean(options?.compareModels);
+  const selectedModel = options?.selectedModel ?? resolveJournalSelectedModel();
   const readOnlyAttrs = finalized ? " readonly disabled" : "";
   const readOnlyClass = finalized ? " opacity-60 cursor-not-allowed bg-slate-800/80 border-slate-500/40" : "";
   const parseButton = finalized
@@ -350,6 +398,7 @@ function journalShell(options?: { journalId?: string; rawText?: string; finalize
       <form hx-post="/api/journal/preview" hx-target="#journal-preview" hx-swap="innerHTML" class="grid gap-3">
         <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="goal: Keep first serve above 60%\n\npractice: date=2026-03-16; workedOn=Serve + return; withCoach=true; coachName=Coach Kim; notes=Short block\n\ndiet: Hydration and protein focus" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}">${escapeHtml(rawText)}</textarea>
         <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" />
+        <div id="journal-llm-controls">${renderJournalLlmControls({ selectedModel, compareModels, finalized })}</div>
         <div class="flex flex-wrap items-center gap-3">
           ${parseButton}
           <button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">${resetLabel}</button>
@@ -374,6 +423,7 @@ function renderJournalStateOob(journal: JournalDraft) {
   return `
     <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="goal: Keep first serve above 60%\n\npractice: date=2026-03-16; workedOn=Serve + return; withCoach=true; coachName=Coach Kim; notes=Short block\n\ndiet: Hydration and protein focus" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}" hx-swap-oob="true">${escapeHtml(journal.rawText)}</textarea>
     <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journal.id)}" hx-swap-oob="true" />
+    <div id="journal-llm-controls" hx-swap-oob="outerHTML:#journal-llm-controls">${renderJournalLlmControls({ finalized })}</div>
     ${previewButton}
     <button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10" hx-swap-oob="true">${resetLabel}</button>
   `;
@@ -474,13 +524,42 @@ function renderJournalCandidateFields(item: IngestItem) {
   `;
 }
 
-function renderJournalPreview(params: { journalId: string; candidates: IngestItem[]; errors: IngestValidationError[]; finalized?: boolean; rawText?: string }) {
-  const { journalId, candidates, errors, finalized, rawText } = params;
+type JournalModelComparison = {
+  candidateCount: number;
+  durationMs: number;
+  error?: string;
+  model: string;
+};
+
+function renderJournalPreview(params: {
+  candidates: IngestItem[];
+  compareResults?: JournalModelComparison[];
+  errors: IngestValidationError[];
+  finalized?: boolean;
+  journalId: string;
+  rawText?: string;
+  selectedModel?: string;
+}) {
+  const { journalId, candidates, errors, finalized, rawText, compareResults = [], selectedModel } = params;
   if (candidates.length === 0 && errors.length === 0) {
     return `<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">No candidate entries found. Use one entry per line, for example: <code>goal: Keep first serve above 60%</code>.</section>`;
   }
 
   const controls = renderJournalControls(journalId, Boolean(finalized));
+  const compareHtml = compareResults.length > 0
+    ? `<section class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 bg-slate-900/40 p-4 text-sm text-slate-200 sm:max-w-3xl">
+      <p class="text-xs uppercase tracking-wide text-cyan-300/80">Model Compare</p>
+      <div class="mt-2 grid gap-2 sm:grid-cols-2">${compareResults
+        .map((result) => `<article class="rounded-xl border ${result.model === selectedModel ? "border-cyan-300/35 bg-cyan-500/10" : "border-slate-500/30 bg-slate-800/40"} p-3">
+          <p class="text-xs text-slate-400">${result.model === selectedModel ? "Selected model" : "Alternate model"}</p>
+          <p class="mt-1 text-sm font-semibold text-slate-100">${escapeHtml(result.model)}</p>
+          <p class="mt-1 text-xs text-slate-300">Latency: ${result.durationMs}ms</p>
+          <p class="text-xs text-slate-300">Candidates: ${result.candidateCount}</p>
+          <p class="text-xs ${result.error ? "text-rose-200" : "text-emerald-200"}">${escapeHtml(result.error ? `Error: ${result.error}` : "Validated successfully")}</p>
+        </article>`)
+        .join("")}</div>
+    </section>`
+    : "";
 
   const errorHtml = errors.length > 0
     ? `<section class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-rose-300/30 bg-rose-500/10 p-4 text-sm text-rose-100 sm:max-w-3xl"><p class="font-semibold">Some lines could not be parsed/validated:</p><ul class="mt-2 grid gap-1">${errors.map((error) => `<li>• ${escapeHtml(error.message)}</li>`).join("")}</ul></section>`
@@ -520,7 +599,129 @@ function renderJournalPreview(params: { journalId: string; candidates: IngestIte
     ? renderJournalStateOob({ id: journalId, rawText, status: "finalized" })
     : `<input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" hx-swap-oob="true" />`;
 
-  return `${oob}${controls}${errorHtml}${cards}`;
+  return `${oob}${controls}${compareHtml}${errorHtml}${cards}`;
+}
+
+async function computeJournalPreviewCandidates(params: {
+  compareModels: boolean;
+  journalLogId: string;
+  selectedModel: string;
+  text: string;
+  userId: string;
+}): Promise<{
+  compareResults: JournalModelComparison[];
+  items: StructuredIngestInput[];
+  result: IngestResult;
+  usedFallback: boolean;
+}> {
+  const { compareModels, journalLogId, selectedModel, text, userId } = params;
+  const fallbackWarning = "Deterministic parser fallback used. Please review candidates before saving.";
+  const applyFallbackWarning = (itemsToUpdate: StructuredIngestInput[]): StructuredIngestInput[] =>
+    itemsToUpdate.map((item) => {
+      const currentWarnings = Array.isArray(item.warnings)
+        ? item.warnings.filter((warning): warning is string => typeof warning === "string")
+        : [];
+      if (currentWarnings.includes(fallbackWarning)) {
+        return item;
+      }
+      return {
+        ...item,
+        warnings: [...currentWarnings, fallbackWarning],
+      };
+    });
+
+  const runValidation = async (structuredItems: StructuredIngestInput[]) =>
+    ingestService.ingest(userId, {
+      mode: "structured",
+      dryRun: true,
+      items: structuredItems,
+    });
+
+  const runModelAttempt = async (model: string): Promise<{
+    durationMs: number;
+    error?: string;
+    model: string;
+    result?: IngestResult;
+  }> => {
+    const startedAt = Date.now();
+    try {
+      const llmItems = await extractJournalCandidatesLLM(text, { model });
+      const result = await runValidation(llmItems);
+      const durationMs = Date.now() - startedAt;
+      if (!result.accepted) {
+        return {
+          model,
+          durationMs,
+          error: `Schema validation failed (${result.errors.length} errors)`,
+          result,
+        };
+      }
+      return { model, durationMs, result };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown LLM extraction error.";
+      return { model, durationMs: Date.now() - startedAt, error: message };
+    }
+  };
+
+  let usedFallback = false;
+  let compareResults: JournalModelComparison[] = [];
+  let items: StructuredIngestInput[];
+  let result: IngestResult;
+  if (journalLlmEnabled && selectedModel) {
+    const primaryAttempt = await runModelAttempt(selectedModel);
+    if (compareModels) {
+      const compareModelsList = getJournalModelOptions().filter((model) => model !== selectedModel);
+      const alternateAttempts = await Promise.all(compareModelsList.map((model) => runModelAttempt(model)));
+      compareResults = [primaryAttempt, ...alternateAttempts].map((attempt) => ({
+        model: attempt.model,
+        durationMs: attempt.durationMs,
+        candidateCount: attempt.result?.candidates.length ?? 0,
+        error: attempt.error,
+      }));
+    }
+
+    if (primaryAttempt.result?.accepted) {
+      items = primaryAttempt.result.candidates;
+      result = primaryAttempt.result;
+      logIngestEvent("journal_llm_extract_success", {
+        journalId: journalLogId,
+        model: selectedModel,
+        provider: env.JOURNAL_LLM_PROVIDER,
+        candidateCount: result.candidates.length,
+      });
+    } else {
+      usedFallback = true;
+      logIngestEvent("journal_llm_extract_failure", {
+        journalId: journalLogId,
+        model: selectedModel,
+        provider: env.JOURNAL_LLM_PROVIDER,
+        reason: primaryAttempt.error ?? "LLM output failed schema validation.",
+      });
+      items = applyFallbackWarning(parseFreeformJournalToStructuredItems(text));
+      result = await runValidation(items);
+    }
+  } else {
+    usedFallback = true;
+    if (env.JOURNAL_LLM_ENABLED && !journalLlmConfigured) {
+      logIngestEvent("journal_llm_extract_failure", {
+        journalId: journalLogId,
+        provider: env.JOURNAL_LLM_PROVIDER,
+        reason: "JOURNAL_LLM_ENABLED is true but config is incomplete.",
+      });
+    }
+    items = applyFallbackWarning(parseFreeformJournalToStructuredItems(text));
+    result = await runValidation(items);
+  }
+
+  if (usedFallback) {
+    logIngestEvent("journal_llm_fallback_used", {
+      journalId: journalLogId,
+      candidateCount: result.candidates.length,
+      validationErrorCount: result.errors.length,
+    });
+  }
+
+  return { items, result, usedFallback, compareResults };
 }
 
 // Dispatches update/delete based on kind
@@ -735,21 +936,25 @@ app.post("/api/journal/preview", async (c) => {
   const body = await c.req.parseBody();
   const text = String(body.text ?? "").trim();
   const requestedJournalId = String(body.journalId ?? "").trim() || undefined;
+  const requestedModel = String(body.journalModel ?? "").trim();
+  const compareModels = ["1", "on", "true", "yes"].includes(String(body.compareModels ?? "").trim().toLowerCase());
+  const selectedModel = resolveJournalSelectedModel(requestedModel);
   if (!text) {
     return c.html(`<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">Enter journal text before previewing.</section>`);
   }
 
   const journal = await upsertDraftJournal(viewer.authUser.id, text, requestedJournalId);
-  const items = parseFreeformJournalToStructuredItems(text);
-  if (items.length === 0) {
-    return c.html(renderJournalPreview({ journalId: journal.id, candidates: [], errors: [] }));
-  }
-
-  const result = await ingestService.ingest(viewer.authUser.id, {
-    mode: "structured",
-    dryRun: true,
-    items,
+  const { items, result, compareResults } = await computeJournalPreviewCandidates({
+    compareModels,
+    journalLogId: journal.id,
+    selectedModel,
+    text,
+    userId: viewer.authUser.id,
   });
+
+  if (items.length === 0) {
+    return c.html(renderJournalPreview({ journalId: journal.id, candidates: [], errors: [], selectedModel, compareResults }));
+  }
 
   if (db) {
     for (const [index, candidate] of result.candidates.entries()) {
@@ -777,7 +982,50 @@ app.post("/api/journal/preview", async (c) => {
     }
   }
 
-  return c.html(renderJournalPreview({ journalId: journal.id, candidates: result.candidates, errors: result.errors }));
+  return c.html(renderJournalPreview({ journalId: journal.id, candidates: result.candidates, errors: result.errors, selectedModel, compareResults }));
+});
+
+// Journal preview test API (JSON, no session cookie). Intended for local/dev automation.
+app.post("/api/journal/preview-test", async (c) => {
+  if (!journalLlmTestPreviewEnabled) {
+    return c.json({ error: "JOURNAL_LLM_TEST_PREVIEW_KEY is not configured." }, 503);
+  }
+
+  const providedKey = c.req.header("x-journal-test-key")?.trim() ?? "";
+  if (!providedKey || providedKey !== env.JOURNAL_LLM_TEST_PREVIEW_KEY) {
+    return c.json({ error: "Unauthorized." }, 401);
+  }
+
+  const contentType = c.req.header("content-type") ?? "";
+  const rawBody: Record<string, unknown> = contentType.includes("application/json")
+    ? await c.req.json<Record<string, unknown>>().catch(() => ({}))
+    : await c.req.parseBody() as Record<string, unknown>;
+
+  const text = String(rawBody.text ?? "").trim();
+  const requestedModel = String(rawBody.journalModel ?? "").trim();
+  const compareModels = ["1", "on", "true", "yes"].includes(String(rawBody.compareModels ?? "").trim().toLowerCase());
+  const selectedModel = resolveJournalSelectedModel(requestedModel);
+
+  if (!text) {
+    return c.json({ error: "text is required." }, 400);
+  }
+
+  const computed = await computeJournalPreviewCandidates({
+    compareModels,
+    journalLogId: "preview-test",
+    selectedModel,
+    text,
+    userId: "preview-test-user",
+  });
+
+  return c.json({
+    candidates: computed.result.candidates,
+    compareResults: computed.compareResults,
+    errors: computed.result.errors,
+    selectedModel,
+    usedFallback: computed.usedFallback,
+    warnings: computed.result.warnings,
+  });
 });
 
 // Journal edit/reset starts a new draft shell

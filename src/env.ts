@@ -22,6 +22,15 @@ const envSchema = z.object({
   INGEST_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(60),
   INGEST_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60 * 1000),
   APP_URL: z.string().url().default("http://localhost:3001"),
+  JOURNAL_LLM_API_KEY: z.string().min(1).optional(),
+  JOURNAL_LLM_BASE_URL: z.string().url().optional(),
+  JOURNAL_LLM_ENABLED: z.coerce.boolean().default(false),
+  JOURNAL_LLM_MAX_INPUT_CHARS: z.coerce.number().int().positive().default(12000),
+  JOURNAL_LLM_MODEL: z.string().min(1).optional(),
+  JOURNAL_LLM_SECONDARY_MODEL: z.string().min(1).optional(),
+  JOURNAL_LLM_TEST_PREVIEW_KEY: z.string().min(1).optional(),
+  JOURNAL_LLM_PROVIDER: z.enum(["openai-compatible"]).default("openai-compatible"),
+  JOURNAL_LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
   PORT: z.coerce.number().int().positive().default(3001),
 });
 
@@ -74,3 +83,6 @@ export const ingestApiKeys: IngestApiKeyRecord[] = (() => {
 export const authConfigured = Boolean(env.NEON_AUTH_BASE_URL && env.NEON_AUTH_COOKIE_SECRET);
 export const dbConfigured = Boolean(env.DATABASE_URL);
 export const ingestApiConfigured = ingestApiKeys.length > 0;
+export const journalLlmConfigured = Boolean(env.JOURNAL_LLM_BASE_URL && env.JOURNAL_LLM_MODEL && env.JOURNAL_LLM_API_KEY);
+export const journalLlmEnabled = env.JOURNAL_LLM_ENABLED && journalLlmConfigured;
+export const journalLlmTestPreviewEnabled = Boolean(env.JOURNAL_LLM_TEST_PREVIEW_KEY);

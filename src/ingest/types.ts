@@ -1,7 +1,7 @@
 export const INGEST_KINDS = ["goal", "practice", "match", "diet", "exercise"] as const;
 
 export type IngestKind = (typeof INGEST_KINDS)[number];
-export type IngestSource = "api" | "mcp" | "journal-ai" | "manual";
+export type IngestSource = "api" | "mcp" | "journal-ai" | "journal-fallback" | "manual";
 
 export type GoalFields = {
   planText: string;

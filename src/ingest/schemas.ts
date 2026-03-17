@@ -62,7 +62,7 @@ export const ingestItemInputSchema = z
     confidence: z.number().min(0).max(1).default(1),
     fields: z.unknown(),
     kind: z.enum(INGEST_KINDS),
-    source: z.enum(["api", "mcp", "journal-ai", "manual"]).default("api"),
+    source: z.enum(["api", "mcp", "journal-ai", "journal-fallback", "manual"]).default("api"),
     warnings: warningsSchema,
   })
   .strict();
@@ -72,7 +72,7 @@ export const ingestStructuredItemRequestSchema = z
     confidence: z.number().min(0).max(1).optional(),
     fields: z.unknown(),
     kind: z.unknown(),
-    source: z.enum(["api", "mcp", "journal-ai", "manual"]).optional(),
+    source: z.enum(["api", "mcp", "journal-ai", "journal-fallback", "manual"]).optional(),
     warnings: z.array(z.unknown()).optional(),
   })
   .strict();

@@ -303,6 +303,20 @@ npm run test:ingest-api:db  # DB-backed idempotency checks (replay + expiry)
 npm run test:ingest-api:scopes  # Scoped-key checks (200/403 coverage)
 ```
 
+### Local Script Testing
+
+Journal LLM local testing instructions for scripts live in:
+
+```bash
+scripts/LOCAL_TESTING.md
+```
+
+Quick start (no-auth local mode):
+
+```bash
+TEST_KEY='local-journal-test-key' APP_URL='http://localhost:3003' MODEL='openai/gpt-oss-20b' COMPARE_MODELS=true ./scripts/test-journal-llm-samples.sh
+```
+
 Smoke scripts:
 
 ```bash
@@ -339,12 +353,22 @@ node scripts/migrate.mjs --mark-applied 0001_initial.sql
 | `INGEST_RATE_LIMIT_MAX` | No | `60` | Max ingest requests per window per API key + userId |
 | `INGEST_IDEMPOTENCY_TTL_MS` | No | `3600000` | Idempotency TTL (used for DB + fallback memory runtime) |
 | `APP_URL` | No | `http://localhost:3001` | Public URL of the application |
+| `JOURNAL_LLM_ENABLED` | No | `false` | Enables LLM-backed journal candidate extraction in `/api/journal/preview` |
+| `JOURNAL_LLM_PROVIDER` | No | `openai-compatible` | LLM provider type (currently OpenAI-compatible transport) |
+| `JOURNAL_LLM_BASE_URL` | No | - | Base URL for OpenAI-compatible API (for example LM Studio gateway) |
+| `JOURNAL_LLM_API_KEY` | No | - | API key sent to OpenAI-compatible provider |
+| `JOURNAL_LLM_MODEL` | No | - | Primary model id used by default for journal extraction |
+| `JOURNAL_LLM_SECONDARY_MODEL` | No | - | Secondary model id available in selector and compare mode |
+| `JOURNAL_LLM_TEST_PREVIEW_KEY` | No | - | Enables `/api/journal/preview-test` JSON endpoint for no-auth local testing |
+| `JOURNAL_LLM_TIMEOUT_MS` | No | `12000` | Timeout for LLM extraction request |
+| `JOURNAL_LLM_MAX_INPUT_CHARS` | No | `12000` | Max journal text length before skipping LLM call |
 | `PORT` | No | `3001` | Server port |
 
 All variables are optional. The app degrades gracefully:
 - **No DATABASE_URL**: DB operations return null/empty, demo mode works
 - **No NEON_AUTH_***: Auth endpoints return 503, guests see demo mode
 - **No INGEST_API_KEY and no INGEST_API_KEYS_JSON**: `/api/ingest` returns 503
+- **Journal LLM vars missing/disabled**: journal preview uses deterministic parser fallback
 
 Example API key format:
 
@@ -403,6 +427,37 @@ Then restart:
 ```bash
 systemctl --user restart tennis-zero-six-alpha-ingest-app.service
 ```
+
+### Journal LLM (OpenAI-Compatible / LM Studio)
+
+Set these in `.env` to enable LLM extraction in journal preview:
+
+```bash
+JOURNAL_LLM_ENABLED=true
+JOURNAL_LLM_PROVIDER=openai-compatible
+JOURNAL_LLM_BASE_URL=https://mango.fff.ad/v1
+JOURNAL_LLM_API_KEY=lmstudio
+JOURNAL_LLM_MODEL=openai/gpt-oss-20b
+JOURNAL_LLM_SECONDARY_MODEL=qwen/qwen3.5-9b
+JOURNAL_LLM_TEST_PREVIEW_KEY=local-journal-test-key
+JOURNAL_LLM_TIMEOUT_MS=12000
+JOURNAL_LLM_MAX_INPUT_CHARS=12000
+```
+
+Behavior:
+- Primary model: `JOURNAL_LLM_MODEL` (`openai/gpt-oss-20b` in the example above).
+- Secondary model: `JOURNAL_LLM_SECONDARY_MODEL` (`qwen/qwen3.5-9b` in the example above).
+- `/api/journal/preview` tries LLM extraction first.
+- LLM output still passes the existing ingest validation dry-run.
+- On timeout/invalid JSON/schema mismatch, the app falls back to deterministic parsing and tags candidates as fallback.
+- `/journal` includes a model selector for reprocessing with either configured model.
+- Optional "Compare models" runs both models and shows side-by-side latency/candidate/error stats, while using the selected model's candidate cards for confirm/dismiss.
+- `/api/journal/preview-test` is available for local automation when `JOURNAL_LLM_TEST_PREVIEW_KEY` is set (header: `x-journal-test-key`).
+
+Reference docs:
+- Prompt used for prose extraction with `openai/gpt-oss-20b`: `docs/journal-llm-prompt-gpt-oss-20b.md`
+- Prose sample capture summary (`openai/gpt-oss-20b`): `docs/journal-llm-prose-capture-summary-gpt-oss-20b.md`
+- API/script testing guide: `docs/journal-llm-api-testing.md`
 
 ---
 
