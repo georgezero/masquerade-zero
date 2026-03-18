@@ -15,6 +15,7 @@ const llmCandidateSchema = z
   .strict();
 
 const llmResponseSchema = z.array(llmCandidateSchema);
+const INGEST_KIND_SET = new Set<string>(INGEST_KINDS);
 
 const llmPassOneSchema = z.union([
   z.array(z.record(z.unknown())),
@@ -73,8 +74,172 @@ function stripCodeFence(value: string): string {
   return trimmed.replace(/^```[a-zA-Z]*\s*/, "").replace(/\s*```$/, "").trim();
 }
 
+function extractBalancedJson(value: string, startIndex: number): string | null {
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = startIndex; i < value.length; i += 1) {
+    const ch = value[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") {
+      stack.push("}");
+      continue;
+    }
+    if (ch === "[") {
+      stack.push("]");
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      const expected = stack.pop();
+      if (!expected || expected !== ch) {
+        return null;
+      }
+      if (stack.length === 0) {
+        return value.slice(startIndex, i + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractJsonLikeContent(value: string): string {
+  const trimmed = value.trim();
+  const withoutThink = trimmed.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+
+  const fencedMatch = withoutThink.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fencedMatch?.[1]) {
+    return fencedMatch[1].trim();
+  }
+
+  const unfenced = stripCodeFence(withoutThink);
+  const firstArray = unfenced.indexOf("[");
+  const firstObject = unfenced.indexOf("{");
+
+  let startIndex = -1;
+  if (firstArray >= 0 && firstObject >= 0) {
+    startIndex = Math.min(firstArray, firstObject);
+  } else if (firstArray >= 0) {
+    startIndex = firstArray;
+  } else if (firstObject >= 0) {
+    startIndex = firstObject;
+  }
+
+  if (startIndex < 0) {
+    return unfenced;
+  }
+
+  const balanced = extractBalancedJson(unfenced, startIndex);
+  return balanced?.trim() || unfenced;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function toFiniteConfidence(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined;
+}
+
+function normalizeCompositeLlmArray(raw: unknown): unknown[] | null {
+  const rootArray = Array.isArray(raw) ? raw : (asRecord(raw) ? [raw] : null);
+  if (!rootArray) {
+    return null;
+  }
+
+  const normalized: Array<{
+    confidence?: number;
+    fields: Record<string, unknown>;
+    kind: typeof INGEST_KINDS[number];
+    warnings: string[];
+  }> = [];
+
+  for (const item of rootArray) {
+    const record = asRecord(item);
+    if (!record) {
+      continue;
+    }
+
+    const directKind = typeof record.kind === "string" ? record.kind.trim().toLowerCase() : "";
+    const directFields = asRecord(record.fields);
+    if (INGEST_KIND_SET.has(directKind) && directFields) {
+      normalized.push({
+        kind: directKind as typeof INGEST_KINDS[number],
+        fields: directFields,
+        confidence: toFiniteConfidence(record.confidence),
+        warnings: Array.isArray(record.warnings)
+          ? record.warnings.filter((value): value is string => typeof value === "string")
+          : [],
+      });
+      continue;
+    }
+
+    const rootConfidence = toFiniteConfidence(record.confidence);
+    const rootWarnings = ["Normalized composite model output into entry candidates."];
+
+    const goalRecord = asRecord(record.goal);
+    const goalWeekStart = toText(record.goalWeekStart) || toText(goalRecord?.weekStart);
+    const goalPlanText = toText(record.planText)
+      || toText(goalRecord?.planText)
+      || toText(goalRecord?.summary)
+      || toText(goalRecord?.notes);
+    if (goalWeekStart || goalPlanText) {
+      normalized.push({
+        kind: "goal",
+        fields: {
+          weekStart: goalWeekStart,
+          planText: goalPlanText,
+        },
+        confidence: rootConfidence,
+        warnings: rootWarnings,
+      });
+    }
+
+    for (const kind of ["practice", "match", "diet", "exercise"] as const) {
+      const section = asRecord(record[kind]);
+      if (!section) {
+        continue;
+      }
+      normalized.push({
+        kind,
+        fields: section,
+        confidence: rootConfidence ?? toFiniteConfidence(section.confidence),
+        warnings: rootWarnings,
+      });
+    }
+  }
+
+  return normalized.length > 0 ? normalized : null;
+}
+
 function toStructuredItems(raw: unknown): StructuredIngestInput[] {
-  const parsed = llmResponseSchema.parse(raw);
+  const direct = llmResponseSchema.safeParse(raw);
+  const parsed = direct.success
+    ? direct.data
+    : llmResponseSchema.parse(normalizeCompositeLlmArray(raw) ?? raw);
   return parsed.map((item) => ({
     confidence: item.confidence,
     fields: item.fields,
@@ -277,12 +442,28 @@ function sanitizeCandidate(item: StructuredIngestInput): StructuredIngestInput {
 export function parseJournalLlmJson(content: string): StructuredIngestInput[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripCodeFence(content));
+    parsed = JSON.parse(extractJsonLikeContent(content));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid JSON.";
     throw new Error(`Could not parse LLM JSON response: ${message}`);
   }
   return toStructuredItems(parsed).map(sanitizeCandidate);
+}
+
+export type JournalLlmExtractionResult = {
+  items: StructuredIngestInput[];
+  parsedOutputJson: string;
+  rawOutputText: string;
+};
+
+export class JournalLlmExtractionError extends Error {
+  rawOutputText?: string;
+
+  constructor(message: string, rawOutputText?: string) {
+    super(message);
+    this.name = "JournalLlmExtractionError";
+    this.rawOutputText = rawOutputText;
+  }
 }
 
 const SYSTEM_PROMPT_SINGLE_PASS = [
@@ -432,10 +613,10 @@ function normalizePassOneCandidates(raw: z.infer<typeof llmPassOneSchema>): Pass
 function parsePassOneCandidates(content: string): PassOneCandidate[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripCodeFence(content));
+    parsed = JSON.parse(extractJsonLikeContent(content));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid JSON.";
-    throw new Error(`Could not parse LLM pass-1 JSON response: ${message}`);
+    throw new JournalLlmExtractionError(`Could not parse LLM pass-1 JSON response: ${message}`, content);
   }
   const validRaw = llmPassOneSchema.parse(parsed);
   return normalizePassOneCandidates(validRaw);
@@ -446,7 +627,7 @@ export async function extractJournalCandidatesLLM(
   options?: {
     model?: string;
   },
-): Promise<StructuredIngestInput[]> {
+): Promise<JournalLlmExtractionResult> {
   if (!journalLlmEnabled) {
     throw new Error("Journal LLM is disabled or not configured.");
   }
@@ -479,8 +660,15 @@ export async function extractJournalCandidatesLLM(
         userPrompt: `Today's date is ${today}.\n\nJournal entry:\n${text}`,
       });
       const singlePassContent = contentFromCompletion(singlePassCompletion);
-      const parsedSinglePass = parseJournalLlmJson(singlePassContent);
-      return applyJournalDateDefaults(parsedSinglePass, today);
+      let parsedSinglePass: StructuredIngestInput[];
+      try {
+        parsedSinglePass = parseJournalLlmJson(singlePassContent);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not parse single-pass output.";
+        throw new JournalLlmExtractionError(message, singlePassContent);
+      }
+      const items = applyJournalDateDefaults(parsedSinglePass, today);
+      return { items, parsedOutputJson: JSON.stringify(items, null, 2), rawOutputText: singlePassContent };
     }
 
     const passTwoCompletion = await runCompletion({
@@ -497,8 +685,15 @@ export async function extractJournalCandidatesLLM(
       ].join("\n"),
     });
     const passTwoContent = contentFromCompletion(passTwoCompletion);
-    const parsedPassTwo = parseJournalLlmJson(passTwoContent);
-    return applyJournalDateDefaults(parsedPassTwo, today);
+    let parsedPassTwo: StructuredIngestInput[];
+    try {
+      parsedPassTwo = parseJournalLlmJson(passTwoContent);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not parse pass-2 output.";
+      throw new JournalLlmExtractionError(message, passTwoContent);
+    }
+    const items = applyJournalDateDefaults(parsedPassTwo, today);
+    return { items, parsedOutputJson: JSON.stringify(items, null, 2), rawOutputText: passTwoContent };
   }
 
   const completion = await runCompletion({
@@ -508,6 +703,13 @@ export async function extractJournalCandidatesLLM(
     userPrompt: `Today's date is ${today}.\n\nJournal entry:\n${text}`,
   });
   const content = contentFromCompletion(completion);
-  const parsed = parseJournalLlmJson(content);
-  return applyJournalDateDefaults(parsed, today);
+  let parsed: StructuredIngestInput[];
+  try {
+    parsed = parseJournalLlmJson(content);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not parse single-pass output.";
+    throw new JournalLlmExtractionError(message, content);
+  }
+  const items = applyJournalDateDefaults(parsed, today);
+  return { items, parsedOutputJson: JSON.stringify(items, null, 2), rawOutputText: content };
 }

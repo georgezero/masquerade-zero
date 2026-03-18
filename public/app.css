@@ -95,6 +95,24 @@ button.is-submitting::after {
   opacity: 0.7;
 }
 
+.journal-date-input {
+  display: block;
+  inline-size: min(100%, 13rem) !important;
+  max-inline-size: 100% !important;
+  min-inline-size: 0 !important;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.journal-date-input::-webkit-datetime-edit,
+.journal-date-input::-webkit-datetime-edit-fields-wrapper {
+  min-width: 0;
+}
+
 /* ── Responsive Brand ─────────────────────────────────────────── */
 
 @media (max-width: 480px) {

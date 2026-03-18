@@ -101,6 +101,37 @@ function initHtmxHandlers() {
   });
 }
 
+function initCopyButtons() {
+  document.addEventListener("click", async (event) => {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const button = target?.closest?.("button[data-copy-target]");
+    if (!(button instanceof HTMLButtonElement)) return;
+
+    const targetId = button.dataset.copyTarget || "";
+    if (!targetId) return;
+    const source = document.getElementById(targetId);
+    if (!source) return;
+
+    const text = source.textContent || "";
+    if (!text.trim()) return;
+
+    const label = button.querySelector("span");
+    const previousLabel = label?.textContent || "Copy";
+    try {
+      await navigator.clipboard.writeText(text);
+      if (label) label.textContent = "Copied";
+      window.setTimeout(() => {
+        if (label) label.textContent = previousLabel;
+      }, 1500);
+    } catch {
+      if (label) label.textContent = "Failed";
+      window.setTimeout(() => {
+        if (label) label.textContent = previousLabel;
+      }, 1500);
+    }
+  });
+}
+
 // ── Avatar Preview (for profile form) ────────────────────────────
 
 function bindAvatarPreview() {
@@ -819,6 +850,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   } else {
     initHtmxHandlers();
+    initCopyButtons();
     initAuthToggle();
     bindAvatarPreview();
     if (window.location.pathname === "/sign-in") {

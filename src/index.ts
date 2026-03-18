@@ -244,19 +244,60 @@ function resolveJournalSelectedModel(requested?: string) {
   return available[0] ?? "";
 }
 
-function renderJournalLlmControls(params?: { compareModels?: boolean; finalized?: boolean; selectedModel?: string }) {
+type JournalUiMode = "prod" | "dev";
+
+function resolveJournalUiMode(requested?: string): JournalUiMode {
+  return requested?.trim().toLowerCase() === "dev" ? "dev" : "prod";
+}
+
+function renderJournalLlmControls(params?: {
+  compareModels?: boolean;
+  finalized?: boolean;
+  parsedOnce?: boolean;
+  parsedOutputJson?: string;
+  selectedModel?: string;
+  uiMode?: JournalUiMode;
+}) {
   const compareModels = Boolean(params?.compareModels);
   const finalized = Boolean(params?.finalized);
+  const parsedOnce = Boolean(params?.parsedOnce);
+  const parsedOutputJson = params?.parsedOutputJson?.trim() ?? "";
   const selectedModel = params?.selectedModel ?? resolveJournalSelectedModel();
+  const uiMode = params?.uiMode ?? "prod";
   const modelOptions = getJournalModelOptions();
   const disabledAttr = finalized ? " disabled" : "";
+  const parseButton = finalized
+    ? `<button id="journal-preview-button" type="button" class="rounded-xl border border-slate-500/40 bg-slate-700/40 px-4 py-2 text-sm font-semibold text-slate-300" disabled>Journal Finalized</button>`
+    : parsedOnce
+      ? `<button id="journal-preview-button" type="submit" data-submitting-text="Parsing..." class="rounded-xl bg-amber-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-amber-400">Re-Parse</button>`
+      : `<button id="journal-preview-button" type="submit" data-submitting-text="Parsing..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400">Parse</button>`;
 
   if (!journalLlmEnabled) {
     return `<section class="rounded-xl border border-amber-300/20 bg-amber-500/10 p-3 text-xs text-amber-100">LLM extraction is disabled or not configured. Preview will use deterministic parser fallback.</section>`;
   }
 
+  if (uiMode === "prod") {
+    return `
+      <section class="rounded-xl border border-cyan-300/20 bg-slate-900/40 p-3">
+        <div class="mb-3">
+          <p class="text-lg font-bold tracking-tight text-white sm:text-xl">Parse Journal</p>
+          <p class="mt-1 text-sm text-slate-300">Extract tennis content</p>
+        </div>
+        <input type="hidden" name="journalModel" value="${escapeHtml(resolveJournalSelectedModel(env.JOURNAL_LLM_MODEL))}" />
+        <input type="hidden" name="compareModels" value="false" />
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+          ${parseButton}
+        </div>
+      </section>
+    `;
+  }
+
   return `
     <section class="rounded-xl border border-cyan-300/20 bg-slate-900/40 p-3">
+      <div class="mb-3">
+        <p class="text-lg font-bold tracking-tight text-white sm:text-xl">Parse Journal</p>
+        <p class="mt-1 text-sm text-slate-300">Extract tennis content</p>
+      </div>
       <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
         <label class="grid gap-1 text-sm font-medium text-slate-300">Model
           <select id="journal-model-select" name="journalModel"${disabledAttr} class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2">
@@ -269,6 +310,21 @@ function renderJournalLlmControls(params?: { compareModels?: boolean; finalized?
         </label>
       </div>
       <p class="mt-2 text-xs text-slate-400">Use "Compare models" to see latency and candidate stats for both configured models while previewing with the selected model.</p>
+      <div class="mt-3 flex flex-wrap items-center gap-3">
+        ${parseButton}
+      </div>
+      ${parsedOutputJson
+    ? `<section class="mt-3 rounded-xl border border-cyan-300/20 bg-slate-950/60 p-3">
+            <div class="flex items-center justify-between gap-2">
+              <p class="text-xs uppercase tracking-wide text-cyan-300/80">Debug: Parsed LLM Output</p>
+              <button type="button" data-copy-target="journal-llm-debug-output" class="inline-flex items-center gap-1 rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/20" aria-label="Copy debug output">
+                <svg aria-hidden="true" viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current"><path d="M16 1H6C4.9 1 4 1.9 4 3v12h2V3h10V1zm3 4H10c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h9c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H10V7h9v14z"/></svg>
+                <span>Copy</span>
+              </button>
+            </div>
+            <pre id="journal-llm-debug-output" class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-700/70 bg-slate-950 px-2 py-2 text-[11px] leading-relaxed text-cyan-100">${escapeHtml(parsedOutputJson)}</pre>
+          </section>`
+    : ""}
     </section>
   `;
 }
@@ -392,23 +448,29 @@ async function finalizeJournal(userId: string, journalId: string): Promise<Journ
   return { id: rows[0].id, rawText: rows[0].rawText, status: rows[0].status as JournalStatus };
 }
 
-function journalShell(options?: { compareModels?: boolean; journalId?: string; rawText?: string; finalized?: boolean; selectedModel?: string }) {
+function journalShell(options?: {
+  compareModels?: boolean;
+  finalized?: boolean;
+  journalId?: string;
+  rawText?: string;
+  selectedModel?: string;
+  uiMode?: JournalUiMode;
+}) {
   const journalId = options?.journalId ?? "";
   const rawText = options?.rawText ?? "";
   const finalized = Boolean(options?.finalized);
   const compareModels = Boolean(options?.compareModels);
+  const uiMode = options?.uiMode ?? "prod";
   const selectedModel = options?.selectedModel ?? resolveJournalSelectedModel();
   const readOnlyAttrs = finalized ? " readonly disabled" : "";
   const readOnlyClass = finalized ? " opacity-60 cursor-not-allowed bg-slate-800/80 border-slate-500/40" : "";
-  const parseButton = finalized
-    ? `<button id="journal-preview-button" type="button" class="rounded-xl border border-slate-500/40 bg-slate-700/40 px-4 py-2 text-sm font-semibold text-slate-300" disabled>Journal Finalized</button>`
-    : `<button id="journal-preview-button" type="submit" data-submitting-text="Parsing..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400">Preview Candidates</button>`;
   const journalPlaceholder = `Today’s session with my coach Jelena was focused on..
 
 Off court I kept things simple with a short walk, a mobility routine, and extra hydration because my legs felt heavy. I put on a mellow instrumental playlist while stretching and then made a quick bowl with rice, salmon, and vegetables before calling it a night.`;
   const resetButton = finalized
-    ? `<button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">New Journal</button>`
+    ? `<button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" hx-vals='{"journalUiMode":"${uiMode}"}' class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">New Journal</button>`
     : "";
+  const inlineControls = `<section id="journal-preview-controls"></section>`;
 
   return `
     <section class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 shadow-neon sm:max-w-3xl sm:p-5">
@@ -423,38 +485,36 @@ Off court I kept things simple with a short walk, a mobility routine, and extra 
       <form hx-post="/api/journal/preview" hx-target="#journal-preview" hx-swap="innerHTML" class="grid gap-3">
         <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="${escapeHtml(journalPlaceholder)}" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}">${escapeHtml(rawText)}</textarea>
         <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" />
-        <div id="journal-llm-controls">${renderJournalLlmControls({ selectedModel, compareModels, finalized })}</div>
+        <input id="journal-ui-mode-input" type="hidden" name="journalUiMode" value="${uiMode}" />
+        <div id="journal-llm-controls">${renderJournalLlmControls({ selectedModel, compareModels, finalized, uiMode, parsedOnce: false })}</div>
         <div class="flex flex-wrap items-center gap-3">
-          ${parseButton}
           ${resetButton}
-          <p class="form-status min-h-5 text-sm font-medium text-emerald-300"></p>
+          <p class="form-status min-h-0 text-sm font-medium text-emerald-300"></p>
         </div>
       </form>
+      <div id="journal-inline-controls">${inlineControls}</div>
     </section>
     <section id="journal-feedback" class="mx-auto w-full max-w-[24.5rem] sm:max-w-3xl"></section>
     <section id="journal-preview" class="mx-auto w-full max-w-[24.5rem] sm:max-w-3xl"></section>
   `;
 }
 
-function renderJournalStateOob(journal: JournalDraft) {
+function renderJournalStateOob(journal: JournalDraft, uiMode: JournalUiMode) {
   const finalized = journal.status === "finalized";
   const readOnlyAttrs = finalized ? " readonly disabled" : "";
   const readOnlyClass = finalized ? " opacity-60 cursor-not-allowed bg-slate-800/80 border-slate-500/40" : "";
   const journalPlaceholder = `Today’s session with my coach Jelena was focused on..
 
 Off court I kept things simple with a short walk, a mobility routine, and extra hydration because my legs felt heavy. I put on a mellow instrumental playlist while stretching and then made a quick bowl with rice, salmon, and vegetables before calling it a night.`;
-  const previewButton = finalized
-    ? `<button id="journal-preview-button" type="button" class="rounded-xl border border-slate-500/40 bg-slate-700/40 px-4 py-2 text-sm font-semibold text-slate-300" disabled hx-swap-oob="true">Journal Finalized</button>`
-    : `<button id="journal-preview-button" type="submit" data-submitting-text="Parsing..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400" hx-swap-oob="true">Preview Candidates</button>`;
   const resetButton = finalized
-    ? `<button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10" hx-swap-oob="true">New Journal</button>`
+    ? `<button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" hx-vals='{"journalUiMode":"${uiMode}"}' class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10" hx-swap-oob="true">New Journal</button>`
     : `<button id="journal-reset-button" type="button" class="hidden" hx-swap-oob="true" aria-hidden="true"></button>`;
 
   return `
     <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="${escapeHtml(journalPlaceholder)}" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}" hx-swap-oob="true">${escapeHtml(journal.rawText)}</textarea>
     <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journal.id)}" hx-swap-oob="true" />
-    <div id="journal-llm-controls" hx-swap-oob="outerHTML:#journal-llm-controls">${renderJournalLlmControls({ finalized })}</div>
-    ${previewButton}
+    <input id="journal-ui-mode-input" type="hidden" name="journalUiMode" value="${uiMode}" hx-swap-oob="true" />
+    <div id="journal-llm-controls" hx-swap-oob="outerHTML:#journal-llm-controls">${renderJournalLlmControls({ finalized, uiMode, parsedOnce: true })}</div>
     ${resetButton}
   `;
 }
@@ -463,15 +523,15 @@ function renderJournalFeedbackOob(message: string) {
   return `<div hx-swap-oob="afterbegin:#journal-feedback"><section class="glass mx-auto mt-3 w-full max-w-[24.5rem] rounded-2xl border border-emerald-300/30 bg-emerald-500/10 p-4 text-sm text-emerald-100 sm:max-w-3xl">${escapeHtml(message)}</section></div>`;
 }
 
-function renderJournalControls(journalId: string, finalized: boolean) {
+function renderJournalControls(journalId: string, finalized: boolean, uiMode: JournalUiMode) {
   if (finalized) {
-    return `<section id="journal-preview-controls" class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-slate-500/30 bg-slate-700/20 p-4 text-sm text-slate-200 sm:max-w-3xl"><strong>Journal finalized.</strong> New Journal to start a new journal draft.</section>`;
+    return `<section id="journal-preview-controls" class="rounded-2xl border border-slate-500/30 bg-slate-700/20 p-3 text-sm text-slate-200"><strong>Journal finalized.</strong> New Journal to start a new journal draft.</section>`;
   }
-  return `<section id="journal-preview-controls" class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 sm:max-w-3xl"><div class="flex flex-wrap items-center justify-between gap-2"><div><p class="text-xs uppercase tracking-wide text-cyan-300/80">Journal ID</p><p class="text-sm text-slate-200">${escapeHtml(journalId)}</p></div><button type="button" hx-post="/api/journal/finalize" hx-target="#journal-preview" hx-swap="innerHTML" hx-vals='{"journalId":"${escapeHtml(journalId)}"}' class="rounded-xl border border-cyan-300/35 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/20">Finalize</button></div></section>`;
+  return `<section id="journal-preview-controls" class="rounded-2xl border border-cyan-300/20 p-3"><div class="flex flex-wrap items-center justify-between gap-2"><div><p class="text-xs uppercase tracking-wide text-cyan-300/80">Journal ID</p><p class="text-sm text-slate-200">${escapeHtml(journalId)}</p></div><button type="button" hx-post="/api/journal/finalize" hx-target="#journal-preview" hx-swap="innerHTML" hx-vals='{"journalId":"${escapeHtml(journalId)}","journalUiMode":"${uiMode}"}' class="rounded-xl border border-cyan-300/35 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/20">Finalize</button></div></section>`;
 }
 
-function renderJournalControlsOob(journalId: string, finalized: boolean) {
-  return `<div hx-swap-oob="outerHTML:#journal-preview-controls">${renderJournalControls(journalId, finalized)}</div>`;
+function renderJournalControlsOob(journalId: string, finalized: boolean, uiMode: JournalUiMode) {
+  return `<div id="journal-inline-controls" hx-swap-oob="innerHTML:#journal-inline-controls">${renderJournalControls(journalId, finalized, uiMode)}</div>`;
 }
 
 function selectJournalFields(kind: (typeof VALID_KINDS)[number], body: Record<string, unknown>): Record<string, unknown> {
@@ -519,7 +579,7 @@ function renderJournalCandidateFields(item: IngestItem) {
   if (item.kind === "practice") {
     const withCoach = fields.withCoach ? " checked" : "";
     return `
-      <label class="grid gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="w-full rounded-xl border border-blue-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-blue-400 focus:ring-2" /></label>
+      <label class="grid min-w-0 overflow-hidden gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="journal-date-input w-full min-w-0 max-w-full rounded-xl border border-blue-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-blue-400 focus:ring-2" /></label>
       <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-300"><input type="checkbox" name="withCoach" value="true"${withCoach} class="h-4 w-4 rounded border-slate-500 bg-slate-800" /> Session with coach</label>
       <label class="grid gap-1 text-sm font-medium text-slate-300">Coach name <input type="text" name="coachName" value="${inputValue(fields.coachName)}" class="w-full rounded-xl border border-blue-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-blue-400 focus:ring-2" /></label>
       <label class="grid gap-1 text-sm font-medium text-slate-300">Worked on <textarea name="workedOn" rows="3" required class="w-full rounded-xl border border-blue-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-blue-400 focus:ring-2">${inputValue(fields.workedOn)}</textarea></label>
@@ -528,7 +588,7 @@ function renderJournalCandidateFields(item: IngestItem) {
   }
   if (item.kind === "match") {
     return `
-      <label class="grid gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="w-full rounded-xl border border-emerald-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-emerald-400 focus:ring-2" /></label>
+      <label class="grid min-w-0 overflow-hidden gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="journal-date-input w-full min-w-0 max-w-full rounded-xl border border-emerald-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-emerald-400 focus:ring-2" /></label>
       <label class="grid gap-1 text-sm font-medium text-slate-300">Opponent <input type="text" name="opponent" value="${inputValue(fields.opponent)}" required class="w-full rounded-xl border border-emerald-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-emerald-400 focus:ring-2" /></label>
       <label class="grid gap-1 text-sm font-medium text-slate-300">Score <input type="text" name="score" value="${inputValue(fields.score)}" class="w-full rounded-xl border border-emerald-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-emerald-400 focus:ring-2" /></label>
       <label class="grid gap-1 text-sm font-medium text-slate-300">Notes <textarea name="notes" rows="3" class="w-full rounded-xl border border-emerald-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-emerald-400 focus:ring-2">${inputValue(fields.notes)}</textarea></label>
@@ -536,14 +596,14 @@ function renderJournalCandidateFields(item: IngestItem) {
   }
   if (item.kind === "diet") {
     return `
-      <label class="grid gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="w-full rounded-xl border border-amber-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-amber-400 focus:ring-2" /></label>
+      <label class="grid min-w-0 overflow-hidden gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="journal-date-input w-full min-w-0 max-w-full rounded-xl border border-amber-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-amber-400 focus:ring-2" /></label>
       <label class="grid gap-1 text-sm font-medium text-slate-300">Summary <textarea name="summary" rows="4" required class="w-full rounded-xl border border-amber-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-amber-400 focus:ring-2">${inputValue(fields.summary)}</textarea></label>
     `;
   }
 
   const exerciseType = String(fields.exerciseType ?? "Other");
   return `
-    <label class="grid gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="w-full rounded-xl border border-violet-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-violet-400 focus:ring-2" /></label>
+    <label class="grid min-w-0 overflow-hidden gap-1 text-sm font-medium text-slate-300">Date <input type="date" name="date" value="${inputValue(fields.date)}" required class="journal-date-input w-full min-w-0 max-w-full rounded-xl border border-violet-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-violet-400 focus:ring-2" /></label>
     <label class="grid gap-1 text-sm font-medium text-slate-300">Type
       <select name="exerciseType" class="w-full rounded-xl border border-violet-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-violet-400 focus:ring-2">
         ${["Strength", "Cardio", "Mobility", "Recovery", "Other"].map((type) => `<option${type === exerciseType ? " selected" : ""}>${type}</option>`).join("")}
@@ -563,19 +623,21 @@ type JournalModelComparison = {
 
 function renderJournalPreview(params: {
   candidates: IngestItem[];
+  compareModels?: boolean;
   compareResults?: JournalModelComparison[];
   errors: IngestValidationError[];
   finalized?: boolean;
   journalId: string;
+  parsedOutputJson?: string;
   rawText?: string;
   selectedModel?: string;
+  uiMode?: JournalUiMode;
 }) {
-  const { journalId, candidates, errors, finalized, rawText, compareResults = [], selectedModel } = params;
-  if (candidates.length === 0 && errors.length === 0) {
-    return `<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">No candidate entries found. Use one entry per line, for example: <code>goal: Keep first serve above 60%</code>.</section>`;
-  }
+  const { journalId, candidates, compareModels, errors, finalized, parsedOutputJson, rawText, compareResults = [], selectedModel, uiMode = "prod" } = params;
+  const noCandidatesHtml = candidates.length === 0 && errors.length === 0
+    ? `<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">No candidate entries found. Use one entry per line, for example: <code>goal: Keep first serve above 60%</code>.</section>`
+    : "";
 
-  const controls = renderJournalControls(journalId, Boolean(finalized));
   const compareHtml = compareResults.length > 0
     ? `<section class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 bg-slate-900/40 p-4 text-sm text-slate-200 sm:max-w-3xl">
       <p class="text-xs uppercase tracking-wide text-cyan-300/80">Model Compare</p>
@@ -613,10 +675,11 @@ function renderJournalPreview(params: {
             <input type="hidden" name="kind" value="${escapeHtml(candidate.kind)}" />
             <input type="hidden" name="journalId" value="${escapeHtml(journalId)}" />
             <input type="hidden" name="candidateIndex" value="${index}" />
+            <input type="hidden" name="journalUiMode" value="${uiMode}" />
             ${renderJournalCandidateFields(candidate)}
             <div class="flex flex-wrap items-center gap-2">
               <button type="submit" data-submitting-text="Saving..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400">Confirm & Save</button>
-              <button type="button" hx-post="/api/journal/dismiss" hx-target="#journal-item-${previewId}" hx-swap="outerHTML" hx-vals='{"journalId":"${escapeHtml(journalId)}","candidateIndex":"${index}"}' class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Dismiss</button>
+              <button type="button" hx-post="/api/journal/dismiss" hx-target="#journal-item-${previewId}" hx-swap="outerHTML" hx-vals='{"journalId":"${escapeHtml(journalId)}","candidateIndex":"${index}","journalUiMode":"${uiMode}"}' class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Dismiss</button>
             </div>
             <p class="form-status min-h-5 text-sm font-medium text-emerald-300"></p>
           </form>
@@ -626,10 +689,19 @@ function renderJournalPreview(params: {
     .join("");
 
   const oob = finalized && typeof rawText === "string"
-    ? renderJournalStateOob({ id: journalId, rawText, status: "finalized" })
-    : `<input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" hx-swap-oob="true" />`;
+    ? renderJournalStateOob({ id: journalId, rawText, status: "finalized" }, uiMode)
+    : `<input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" hx-swap-oob="true" /><input id="journal-ui-mode-input" type="hidden" name="journalUiMode" value="${uiMode}" hx-swap-oob="true" />`;
+  const controlsOob = `<div id="journal-llm-controls" hx-swap-oob="outerHTML:#journal-llm-controls">${renderJournalLlmControls({
+    compareModels,
+    finalized: Boolean(finalized),
+    parsedOnce: true,
+    parsedOutputJson,
+    selectedModel,
+    uiMode,
+  })}</div>`;
+  const journalControlsOob = renderJournalControlsOob(journalId, Boolean(finalized), uiMode);
 
-  return `${oob}${controls}${compareHtml}${errorHtml}${cards}`;
+  return `${oob}${controlsOob}${journalControlsOob}${compareHtml}${errorHtml}${noCandidatesHtml}${cards}`;
 }
 
 async function computeJournalPreviewCandidates(params: {
@@ -641,6 +713,7 @@ async function computeJournalPreviewCandidates(params: {
 }): Promise<{
   compareResults: JournalModelComparison[];
   items: StructuredIngestInput[];
+  parsedOutputJson?: string;
   result: IngestResult;
   usedFallback: boolean;
 }> {
@@ -671,31 +744,51 @@ async function computeJournalPreviewCandidates(params: {
     durationMs: number;
     error?: string;
     model: string;
+    parsedOutputJson?: string;
     result?: IngestResult;
   }> => {
     const startedAt = Date.now();
     try {
-      const llmItems = await extractJournalCandidatesLLM(text, { model });
-      const result = await runValidation(llmItems);
+      const llmResult = await extractJournalCandidatesLLM(text, { model });
+      const result = await runValidation(llmResult.items);
       const durationMs = Date.now() - startedAt;
+      const debugOutput = llmResult.rawOutputText || llmResult.parsedOutputJson;
       if (!result.accepted) {
         return {
           model,
           durationMs,
           error: `Schema validation failed (${result.errors.length} errors)`,
+          parsedOutputJson: debugOutput,
           result,
         };
       }
-      return { model, durationMs, result };
+      return { model, durationMs, parsedOutputJson: debugOutput, result };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown LLM extraction error.";
-      return { model, durationMs: Date.now() - startedAt, error: message };
+      const rawOutputUnknown = (error as { rawOutputText?: unknown })?.rawOutputText;
+      let rawOutput = "";
+      if (typeof rawOutputUnknown === "string") {
+        rawOutput = rawOutputUnknown;
+      } else if (rawOutputUnknown !== undefined) {
+        try {
+          rawOutput = JSON.stringify(rawOutputUnknown, null, 2);
+        } catch {
+          rawOutput = String(rawOutputUnknown);
+        }
+      }
+      return {
+        model,
+        durationMs: Date.now() - startedAt,
+        error: message,
+        parsedOutputJson: rawOutput || `LLM extraction error: ${message}`,
+      };
     }
   };
 
   let usedFallback = false;
   let compareResults: JournalModelComparison[] = [];
   let items: StructuredIngestInput[];
+  let parsedOutputJson: string | undefined;
   let result: IngestResult;
   if (journalLlmEnabled && selectedModel) {
     const primaryAttempt = await runModelAttempt(selectedModel);
@@ -712,6 +805,7 @@ async function computeJournalPreviewCandidates(params: {
 
     if (primaryAttempt.result?.accepted) {
       items = primaryAttempt.result.candidates;
+      parsedOutputJson = primaryAttempt.parsedOutputJson;
       result = primaryAttempt.result;
       logIngestEvent("journal_llm_extract_success", {
         journalId: journalLogId,
@@ -721,6 +815,7 @@ async function computeJournalPreviewCandidates(params: {
       });
     } else {
       usedFallback = true;
+      parsedOutputJson = primaryAttempt.parsedOutputJson;
       logIngestEvent("journal_llm_extract_failure", {
         journalId: journalLogId,
         model: selectedModel,
@@ -732,6 +827,7 @@ async function computeJournalPreviewCandidates(params: {
     }
   } else {
     usedFallback = true;
+    parsedOutputJson = "LLM extraction not attempted; deterministic parser fallback was used.";
     if (env.JOURNAL_LLM_ENABLED && !journalLlmConfigured) {
       logIngestEvent("journal_llm_extract_failure", {
         journalId: journalLogId,
@@ -751,7 +847,7 @@ async function computeJournalPreviewCandidates(params: {
     });
   }
 
-  return { items, result, usedFallback, compareResults };
+  return { items, parsedOutputJson, result, usedFallback, compareResults };
 }
 
 // Dispatches update/delete based on kind
@@ -802,6 +898,22 @@ app.get("/", async (c) => {
   }
 
   return c.html(page({ viewer, route: routeName, flash, bodyContent }));
+});
+
+// Add-entry hub route
+app.get("/add", async (c) => {
+  const viewer = c.get("viewer");
+  c.header("Cache-Control", "no-store");
+
+  if (viewer.role === "guest") {
+    return c.redirect("/demo/add");
+  }
+  if (viewer.profileRequired) {
+    return c.redirect("/profile");
+  }
+
+  const bodyContent = entryLauncher();
+  return c.html(page({ viewer, route: "home", flash: getFlash(c), bodyContent }));
 });
 
 // Sign-in page (guest only)
@@ -904,6 +1016,28 @@ app.get("/journal", async (c) => {
       journalId: draft?.id,
       rawText: draft?.rawText,
       finalized: draft?.status === "finalized",
+      uiMode: "prod",
+    }),
+  }));
+});
+
+app.get("/journal-dev", async (c) => {
+  const viewer = c.get("viewer");
+  if (viewer.role === "guest" || !viewer.authUser) {
+    setFlash(c, "Sign in required.");
+    return c.redirect(`/sign-in?redirectTo=${encodeURIComponent("/journal-dev")}`);
+  }
+  c.header("Cache-Control", "no-store");
+  const draft = await getLatestDraftJournal(viewer.authUser.id);
+  return c.html(page({
+    viewer,
+    route: "journal-dev",
+    flash: getFlash(c),
+    bodyContent: journalShell({
+      journalId: draft?.id,
+      rawText: draft?.rawText,
+      finalized: draft?.status === "finalized",
+      uiMode: "dev",
     }),
   }));
 });
@@ -913,6 +1047,12 @@ app.get("/journal", async (c) => {
 // ---------------------------------------------------------------------------
 
 app.get("/demo", async (c) => {
+  const viewer = c.get("viewer");
+  c.header("Cache-Control", "no-store");
+  return c.html(page({ viewer, route: "demo", flash: getFlash(c), bodyContent: "" }));
+});
+
+app.get("/demo/add", async (c) => {
   const viewer = c.get("viewer");
   c.header("Cache-Control", "no-store");
   return c.html(page({ viewer, route: "demo", flash: getFlash(c), bodyContent: "" }));
@@ -965,16 +1105,20 @@ app.post("/api/journal/preview", async (c) => {
 
   const body = await c.req.parseBody();
   const text = String(body.text ?? "").trim();
+  const uiMode = resolveJournalUiMode(String(body.journalUiMode ?? ""));
   const requestedJournalId = String(body.journalId ?? "").trim() || undefined;
   const requestedModel = String(body.journalModel ?? "").trim();
-  const compareModels = ["1", "on", "true", "yes"].includes(String(body.compareModels ?? "").trim().toLowerCase());
-  const selectedModel = resolveJournalSelectedModel(requestedModel);
+  const compareModelsRequested = ["1", "on", "true", "yes"].includes(String(body.compareModels ?? "").trim().toLowerCase());
+  const compareModels = uiMode === "dev" ? compareModelsRequested : false;
+  const selectedModel = uiMode === "dev"
+    ? resolveJournalSelectedModel(requestedModel)
+    : resolveJournalSelectedModel(env.JOURNAL_LLM_MODEL);
   if (!text) {
     return c.html(`<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">Enter journal text before previewing.</section>`);
   }
 
   const journal = await upsertDraftJournal(viewer.authUser.id, text, requestedJournalId);
-  const { items, result, compareResults } = await computeJournalPreviewCandidates({
+  const { items, result, compareResults, parsedOutputJson } = await computeJournalPreviewCandidates({
     compareModels,
     journalLogId: journal.id,
     selectedModel,
@@ -983,7 +1127,16 @@ app.post("/api/journal/preview", async (c) => {
   });
 
   if (items.length === 0) {
-    return c.html(renderJournalPreview({ journalId: journal.id, candidates: [], errors: [], selectedModel, compareResults }));
+    return c.html(renderJournalPreview({
+      journalId: journal.id,
+      candidates: [],
+      compareModels,
+      errors: [],
+      selectedModel,
+      compareResults,
+      parsedOutputJson,
+      uiMode,
+    }));
   }
 
   if (db) {
@@ -1012,7 +1165,16 @@ app.post("/api/journal/preview", async (c) => {
     }
   }
 
-  return c.html(renderJournalPreview({ journalId: journal.id, candidates: result.candidates, errors: result.errors, selectedModel, compareResults }));
+  return c.html(renderJournalPreview({
+    journalId: journal.id,
+    candidates: result.candidates,
+    compareModels,
+    errors: result.errors,
+    selectedModel,
+    compareResults,
+    parsedOutputJson,
+    uiMode,
+  }));
 });
 
 // Journal preview test API (JSON, no session cookie). Intended for local/dev automation.
@@ -1062,8 +1224,9 @@ app.post("/api/journal/preview-test", async (c) => {
 app.post("/api/journal/edit", async (c) => {
   const viewer = c.get("viewer");
   requireAuth(viewer);
-
-  return c.html(journalShell());
+  const body = await c.req.parseBody();
+  const uiMode = resolveJournalUiMode(String(body.journalUiMode ?? ""));
+  return c.html(journalShell({ uiMode }));
 });
 
 // Journal finalize action
@@ -1071,6 +1234,7 @@ app.post("/api/journal/finalize", async (c) => {
   const viewer = c.get("viewer");
   requireAuth(viewer);
   const body = await c.req.parseBody();
+  const uiMode = resolveJournalUiMode(String(body.journalUiMode ?? ""));
   const journalId = String(body.journalId ?? "").trim();
   if (!journalId) {
     return c.html(journalErrorHtml("journalId is required."), 400);
@@ -1091,7 +1255,7 @@ app.post("/api/journal/finalize", async (c) => {
 
   const candidates: IngestItem[] = (rows ?? []).map((row) => JSON.parse(row.payloadJson) as IngestItem);
   const journal = await getJournalById(viewer.authUser.id, journalId);
-  return c.html(renderJournalPreview({ journalId, candidates, errors: [], finalized: true, rawText: journal?.rawText ?? "" }));
+  return c.html(renderJournalPreview({ journalId, candidates, errors: [], finalized: true, rawText: journal?.rawText ?? "", uiMode }));
 });
 
 // Journal candidate confirm/save
@@ -1100,6 +1264,7 @@ app.post("/api/journal/confirm", async (c) => {
   requireAuth(viewer);
 
   const body = await c.req.parseBody() as Record<string, unknown>;
+  const uiMode = resolveJournalUiMode(String(body.journalUiMode ?? ""));
   const journalId = String(body.journalId ?? "").trim();
   const candidateIndexRaw = Number(body.candidateIndex ?? "");
   const kind = String(body.kind ?? "").trim();
@@ -1151,7 +1316,7 @@ app.post("/api/journal/confirm", async (c) => {
     }
   }
 
-  return c.html(`${renderJournalStateOob(finalizedJournal)}${renderJournalControlsOob(journalId, true)}${renderJournalFeedbackOob(`Saved ${kind} entry from journal ${journalId}.`)}<div class="hidden"></div>`);
+  return c.html(`${renderJournalStateOob(finalizedJournal, uiMode)}${renderJournalControlsOob(journalId, true, uiMode)}${renderJournalFeedbackOob(`Saved ${kind} entry from journal ${journalId}.`)}<div class="hidden"></div>`);
 });
 
 // Journal candidate dismiss (no save)

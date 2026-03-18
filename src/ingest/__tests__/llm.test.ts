@@ -25,6 +25,63 @@ test("parses JSON array content into structured ingest items", () => {
   assert.equal((items[0]?.fields as Record<string, unknown>).planText, "Hold 60% first serve");
 });
 
+test("parses JSON when output contains leading prose and fenced json", () => {
+  const items = parseJournalLlmJson(
+    [
+      "Thinking Process:",
+      "I will map this to a practice entry.",
+      "```json",
+      JSON.stringify([
+        {
+          kind: "practice",
+          fields: {
+            date: "2026-03-18",
+            withCoach: true,
+            coachName: "Jelena",
+            workedOn: "Transition patterns",
+            notes: "Solid session",
+          },
+          confidence: 0.95,
+          warnings: [],
+        },
+      ]),
+      "```",
+    ].join("\n"),
+  );
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.kind, "practice");
+  assert.equal((items[0]?.fields as Record<string, unknown>).coachName, "Jelena");
+});
+
+test("normalizes composite model output with nested entry sections", () => {
+  const items = parseJournalLlmJson(
+    JSON.stringify([
+      {
+        goalWeekStart: "2026-03-18",
+        planText: "Improve transition patterns and recognition.",
+        practice: {
+          date: "2026-03-18",
+          withCoach: true,
+          coachName: "Jelena",
+          workedOn: "approach-plus-first-volley",
+          notes: "Footwork was better.",
+        },
+        diet: {
+          date: "2026-03-18",
+          summary: "Hydration and salmon bowl.",
+        },
+      },
+    ]),
+  );
+
+  assert.equal(items.length, 3);
+  assert.equal(items[0]?.kind, "goal");
+  assert.equal(items[1]?.kind, "practice");
+  assert.equal(items[2]?.kind, "diet");
+  assert.equal((items[1]?.fields as Record<string, unknown>).coachName, "Jelena");
+});
+
 test("throws for non-array response payload shape", () => {
   assert.throws(
     () =>

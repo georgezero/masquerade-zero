@@ -356,6 +356,8 @@ node scripts/migrate.mjs --mark-applied 0001_initial.sql
 | `JOURNAL_LLM_ENABLED` | No | `false` | Enables LLM-backed journal candidate extraction in `/api/journal/preview` |
 | `JOURNAL_LLM_PROVIDER` | No | `openai-compatible` | LLM provider type (currently OpenAI-compatible transport) |
 | `JOURNAL_LLM_BASE_URL` | No | - | Base URL for OpenAI-compatible API (for example LM Studio gateway) |
+| `JOURNAL_LLM_BASE_URL_SECONDARY` | No | - | Optional secondary OpenAI-compatible base URL |
+| `JOURNAL_LLM_USE_SECONDARY_BASE_URL` | No | `false` | Switch active LLM endpoint from primary to secondary base URL |
 | `JOURNAL_LLM_API_KEY` | No | - | API key sent to OpenAI-compatible provider |
 | `JOURNAL_LLM_MODEL` | No | - | Primary model id used by default for journal extraction |
 | `JOURNAL_LLM_SECONDARY_MODEL` | No | - | Secondary model id available in selector and compare mode |
@@ -438,6 +440,8 @@ Set these in `.env` to enable LLM extraction in journal preview:
 JOURNAL_LLM_ENABLED=true
 JOURNAL_LLM_PROVIDER=openai-compatible
 JOURNAL_LLM_BASE_URL=https://mango.fff.ad/v1
+JOURNAL_LLM_BASE_URL_SECONDARY=http://guava.mllm.bet/v1
+JOURNAL_LLM_USE_SECONDARY_BASE_URL=false
 JOURNAL_LLM_API_KEY=lmstudio
 JOURNAL_LLM_MODEL=openai/gpt-oss-20b
 JOURNAL_LLM_SECONDARY_MODEL=qwen3.5-9b-mlx
@@ -452,6 +456,7 @@ Behavior:
 - Primary model: `JOURNAL_LLM_MODEL` (`openai/gpt-oss-20b` in the example above).
 - Secondary model: `JOURNAL_LLM_SECONDARY_MODEL` (`qwen3.5-9b-mlx` in the example above).
 - Tertiary model: `JOURNAL_LLM_TERTIARY_MODEL` (`qwen3.5-4b-mlx` in the example above).
+- Endpoint selection: set `JOURNAL_LLM_USE_SECONDARY_BASE_URL=true` to use `JOURNAL_LLM_BASE_URL_SECONDARY` instead of `JOURNAL_LLM_BASE_URL`.
 - `/api/journal/preview` tries LLM extraction first.
 - `JOURNAL_LLM_TWO_PASS=true` switches to a two-step pipeline: pass 1 recall candidates, pass 2 strict schema mapping.
 - LLM output still passes the existing ingest validation dry-run.

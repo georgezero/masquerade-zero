@@ -1,7 +1,7 @@
 import type { Viewer, HistoryItem, AppProfile } from "./lib/app.js";
 import { escapeHtml, formatDateTime } from "./lib/html.js";
 
-const ASSET_VERSION = "20260318-six-alpha-029";
+const ASSET_VERSION = "20260318-six-alpha-032";
 
 function avatarInitials(viewer: Viewer) {
   const first = viewer.profile?.firstName?.trim() || "";
@@ -22,7 +22,7 @@ function avatarInitials(viewer: Viewer) {
   return "P";
 }
 
-function headerActions(viewer: Viewer, route: "home" | "profile" | "view" | "edit" | "new" | "demo" | "sign-in" | "journal") {
+function headerActions(viewer: Viewer, route: "home" | "profile" | "view" | "edit" | "new" | "demo" | "sign-in" | "journal" | "journal-dev") {
   if (viewer.role === "guest") {
     if (route === "sign-in") {
       return "";
@@ -94,15 +94,12 @@ export function historySection(items: HistoryItem[], total: number, filter: stri
     <section id="feed" class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 shadow-neon sm:max-w-3xl sm:p-5">
       <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h2 class="text-xl font-bold tracking-tight text-white sm:text-2xl">Recent Entries</h2>
-        <button
-          hx-get="/api/entry-launcher"
-          hx-target="#main-content"
-          hx-swap="innerHTML"
-          type="button"
+        <a
+          href="/add"
           class="rounded-xl border border-fuchsia-200/80 bg-fuchsia-400/25 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-fuchsia-50 shadow-[0_0_18px_rgba(232,121,249,0.35)] transition hover:bg-fuchsia-400/35"
         >
           Add Entry
-        </button>
+        </a>
       </div>
       <div class="mb-3 flex flex-wrap items-center gap-2">
         <label for="history-filter" class="text-xs uppercase tracking-wide text-slate-400">Category</label>
@@ -301,8 +298,8 @@ export function entryLauncher() {
         <a href="/new/diet" class="flex min-h-12 items-center justify-center rounded-xl border border-amber-200/80 bg-amber-400/25 px-4 py-3 text-sm font-bold text-amber-50 shadow-[0_0_18px_rgba(251,191,36,0.45)] transition hover:bg-amber-400/35">Diet</a>
         <a href="/new/exercise" class="flex min-h-12 items-center justify-center rounded-xl border border-fuchsia-200/80 bg-fuchsia-400/25 px-4 py-3 text-sm font-bold text-fuchsia-50 shadow-[0_0_18px_rgba(232,121,249,0.45)] transition hover:bg-fuchsia-400/35">Exercise</a>
       </div>
-      <div class="mt-3">
-        <a href="/journal" class="inline-flex min-h-11 items-center justify-center rounded-xl border border-cyan-300/35 bg-cyan-500/10 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-cyan-100 transition hover:bg-cyan-500/20">Journal Ingest</a>
+      <div class="mt-5 rounded-2xl border border-rose-300/30 bg-rose-500/5 p-3">
+        <a href="/journal" class="flex min-h-12 w-full items-center justify-center rounded-xl border border-rose-200/80 bg-rose-400/25 px-4 py-3 text-sm font-bold text-rose-50 shadow-[0_0_18px_rgba(251,113,133,0.45)] transition hover:bg-rose-400/35">Journal</a>
       </div>
     </section>
   `;
@@ -482,7 +479,7 @@ export function profileForm(viewer: Viewer) {
 
 export function page(params: {
   viewer: Viewer;
-  route: "home" | "profile" | "view" | "edit" | "new" | "demo" | "sign-in" | "journal";
+  route: "home" | "profile" | "view" | "edit" | "new" | "demo" | "sign-in" | "journal" | "journal-dev";
   flash?: string;
   bodyContent: string;
 }) {
