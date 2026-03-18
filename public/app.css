@@ -65,6 +65,29 @@
   opacity: 0.8;
 }
 
+button.is-submitting {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+}
+
+button.is-submitting::after {
+  content: "";
+  width: 0.78rem;
+  height: 0.78rem;
+  border-radius: 9999px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: submit-spinner 0.75s linear infinite;
+}
+
+@keyframes submit-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .htmx-request input,
 .htmx-request textarea,
 .htmx-request select {

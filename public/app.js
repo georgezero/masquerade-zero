@@ -76,6 +76,8 @@ function initHtmxHandlers() {
     if (btn) {
       btn._originalText = btn.textContent;
       btn.textContent = btn.dataset.submittingText || "Saving...";
+      btn.classList.add("is-submitting");
+      btn.setAttribute("aria-busy", "true");
     }
   });
 
@@ -86,6 +88,10 @@ function initHtmxHandlers() {
     if (btn && btn._originalText) {
       btn.textContent = btn._originalText;
       delete btn._originalText;
+    }
+    if (btn) {
+      btn.classList.remove("is-submitting");
+      btn.removeAttribute("aria-busy");
     }
   });
 

@@ -207,6 +207,23 @@ function inputValue(value: unknown) {
   return escapeHtml(String(value ?? ""));
 }
 
+function journalTagClassForKind(kind: string) {
+  switch (kind) {
+    case "goal":
+      return "rounded-full border border-cyan-200/80 bg-cyan-400/25 px-2 py-1 text-xs font-bold uppercase tracking-wide text-cyan-50 shadow-[0_0_12px_rgba(34,211,238,0.4)]";
+    case "practice":
+      return "rounded-full border border-indigo-200/80 bg-indigo-400/25 px-2 py-1 text-xs font-bold uppercase tracking-wide text-indigo-50 shadow-[0_0_12px_rgba(99,102,241,0.4)]";
+    case "match":
+      return "rounded-full border border-lime-200/80 bg-lime-400/25 px-2 py-1 text-xs font-bold uppercase tracking-wide text-lime-50 shadow-[0_0_12px_rgba(163,230,53,0.4)]";
+    case "diet":
+      return "rounded-full border border-amber-200/80 bg-amber-400/25 px-2 py-1 text-xs font-bold uppercase tracking-wide text-amber-50 shadow-[0_0_12px_rgba(251,191,36,0.4)]";
+    case "exercise":
+      return "rounded-full border border-fuchsia-200/80 bg-fuchsia-400/25 px-2 py-1 text-xs font-bold uppercase tracking-wide text-fuchsia-50 shadow-[0_0_12px_rgba(232,121,249,0.4)]";
+    default:
+      return "rounded-full border border-cyan-300/40 bg-cyan-500/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-cyan-100";
+  }
+}
+
 function journalErrorHtml(message: string) {
   return `<section class="glass mx-auto mt-3 w-full max-w-[24.5rem] rounded-2xl border border-rose-300/30 bg-rose-500/10 p-4 text-sm text-rose-100 sm:max-w-3xl">${escapeHtml(message)}</section>`;
 }
@@ -575,7 +592,7 @@ function renderJournalPreview(params: {
       return `
         <section id="journal-item-${previewId}" class="glass mx-auto mt-3 w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 shadow-neon sm:max-w-3xl sm:p-5">
           <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <span class="rounded-full border border-cyan-300/40 bg-cyan-500/15 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-cyan-100">${escapeHtml(candidate.kind)}</span>
+            <span class="${journalTagClassForKind(candidate.kind)}">${escapeHtml(candidate.kind)}</span>
             <span class="text-xs text-slate-400">Confidence ${(candidate.confidence * 100).toFixed(0)}%</span>
           </div>
           ${warnings}
