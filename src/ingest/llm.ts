@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { z } from "zod";
 
-import { env, journalLlmEnabled } from "../env.js";
+import { env, journalLlmBaseUrl, journalLlmEnabled } from "../env.js";
 import { INGEST_KINDS, type StructuredIngestInput } from "./types.js";
 
 const llmCandidateSchema = z
@@ -23,22 +23,44 @@ const llmPassOneSchema = z.union([
   }).strict(),
 ]);
 
-let openAiClient: OpenAI | null = null;
+type OpenAiChatClient = {
+  chat: {
+    completions: {
+      create: (params: {
+        messages: Array<{ content: string; role: "system" | "user" }>;
+        model: string;
+        temperature: number;
+      }) => Promise<{ choices?: Array<{ message?: { content?: string | null } }> }>;
+    };
+  };
+};
+
+type OpenAiConstructor = {
+  default?: new (options: { apiKey?: string; baseURL?: string; timeout?: number }) => OpenAiChatClient;
+  new (options: { apiKey?: string; baseURL?: string; timeout?: number }): OpenAiChatClient;
+};
+
+let openAiClient: OpenAiChatClient | null = null;
+let openAiClientBaseUrl: string | null = null;
 
 function todayIsoDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function getOpenAiClient(): OpenAI {
-  if (openAiClient) {
+function getOpenAiClient(): OpenAiChatClient {
+  if (openAiClient && openAiClientBaseUrl === journalLlmBaseUrl) {
     return openAiClient;
   }
 
-  openAiClient = new OpenAI({
+  const ctor = OpenAI as unknown as OpenAiConstructor;
+  const OpenAiClass = ctor.default ?? ctor;
+
+  openAiClient = new OpenAiClass({
     apiKey: env.JOURNAL_LLM_API_KEY,
-    baseURL: env.JOURNAL_LLM_BASE_URL,
+    baseURL: journalLlmBaseUrl,
     timeout: env.JOURNAL_LLM_TIMEOUT_MS,
   });
+  openAiClientBaseUrl = journalLlmBaseUrl ?? null;
 
   return openAiClient;
 }
@@ -325,7 +347,7 @@ const SYSTEM_PROMPT_PASS_TWO = [
 ].join("\n");
 
 async function runCompletion(params: {
-  client: OpenAI;
+  client: OpenAiChatClient;
   model: string;
   systemPrompt: string;
   userPrompt: string;
@@ -341,7 +363,7 @@ async function runCompletion(params: {
 }
 
 function contentFromCompletion(completion: Awaited<ReturnType<typeof runCompletion>>): string {
-  const content = completion.choices[0]?.message?.content;
+  const content = completion.choices?.[0]?.message?.content;
   if (!content) {
     throw new Error("LLM response was empty.");
   }
