@@ -306,11 +306,14 @@ async function getLatestDraftJournal(userId: string): Promise<JournalDraft | nul
       status: journalSubmissions.status,
     })
     .from(journalSubmissions)
-    .where(and(eq(journalSubmissions.userId, userId), eq(journalSubmissions.status, "draft")))
+    .where(eq(journalSubmissions.userId, userId))
     .orderBy(desc(journalSubmissions.updatedAt))
     .limit(1);
 
   if (!rows[0]) {
+    return null;
+  }
+  if (rows[0].status !== "draft") {
     return null;
   }
   return {
@@ -400,7 +403,12 @@ function journalShell(options?: { compareModels?: boolean; journalId?: string; r
   const parseButton = finalized
     ? `<button id="journal-preview-button" type="button" class="rounded-xl border border-slate-500/40 bg-slate-700/40 px-4 py-2 text-sm font-semibold text-slate-300" disabled>Journal Finalized</button>`
     : `<button id="journal-preview-button" type="submit" data-submitting-text="Parsing..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400">Preview Candidates</button>`;
-  const resetLabel = finalized ? "New Journal" : "Edit Journal";
+  const journalPlaceholder = `Today’s session with my coach Jelena was focused on..
+
+Off court I kept things simple with a short walk, a mobility routine, and extra hydration because my legs felt heavy. I put on a mellow instrumental playlist while stretching and then made a quick bowl with rice, salmon, and vegetables before calling it a night.`;
+  const resetButton = finalized
+    ? `<button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">New Journal</button>`
+    : "";
 
   return `
     <section class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 shadow-neon sm:max-w-3xl sm:p-5">
@@ -413,12 +421,12 @@ function journalShell(options?: { compareModels?: boolean; journalId?: string; r
         <a href="/" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Home</a>
       </div>
       <form hx-post="/api/journal/preview" hx-target="#journal-preview" hx-swap="innerHTML" class="grid gap-3">
-        <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="goal: Keep first serve above 60%\n\npractice: date=2026-03-16; workedOn=Serve + return; withCoach=true; coachName=Coach Kim; notes=Short block\n\ndiet: Hydration and protein focus" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}">${escapeHtml(rawText)}</textarea>
+        <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="${escapeHtml(journalPlaceholder)}" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}">${escapeHtml(rawText)}</textarea>
         <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" />
         <div id="journal-llm-controls">${renderJournalLlmControls({ selectedModel, compareModels, finalized })}</div>
         <div class="flex flex-wrap items-center gap-3">
           ${parseButton}
-          <button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">${resetLabel}</button>
+          ${resetButton}
           <p class="form-status min-h-5 text-sm font-medium text-emerald-300"></p>
         </div>
       </form>
@@ -432,17 +440,22 @@ function renderJournalStateOob(journal: JournalDraft) {
   const finalized = journal.status === "finalized";
   const readOnlyAttrs = finalized ? " readonly disabled" : "";
   const readOnlyClass = finalized ? " opacity-60 cursor-not-allowed bg-slate-800/80 border-slate-500/40" : "";
+  const journalPlaceholder = `Today’s session with my coach Jelena was focused on..
+
+Off court I kept things simple with a short walk, a mobility routine, and extra hydration because my legs felt heavy. I put on a mellow instrumental playlist while stretching and then made a quick bowl with rice, salmon, and vegetables before calling it a night.`;
   const previewButton = finalized
     ? `<button id="journal-preview-button" type="button" class="rounded-xl border border-slate-500/40 bg-slate-700/40 px-4 py-2 text-sm font-semibold text-slate-300" disabled hx-swap-oob="true">Journal Finalized</button>`
     : `<button id="journal-preview-button" type="submit" data-submitting-text="Parsing..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400" hx-swap-oob="true">Preview Candidates</button>`;
-  const resetLabel = finalized ? "New Journal" : "Edit Journal";
+  const resetButton = finalized
+    ? `<button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10" hx-swap-oob="true">New Journal</button>`
+    : `<button id="journal-reset-button" type="button" class="hidden" hx-swap-oob="true" aria-hidden="true"></button>`;
 
   return `
-    <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="goal: Keep first serve above 60%\n\npractice: date=2026-03-16; workedOn=Serve + return; withCoach=true; coachName=Coach Kim; notes=Short block\n\ndiet: Hydration and protein focus" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}" hx-swap-oob="true">${escapeHtml(journal.rawText)}</textarea>
+    <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="${escapeHtml(journalPlaceholder)}" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}" hx-swap-oob="true">${escapeHtml(journal.rawText)}</textarea>
     <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journal.id)}" hx-swap-oob="true" />
     <div id="journal-llm-controls" hx-swap-oob="outerHTML:#journal-llm-controls">${renderJournalLlmControls({ finalized })}</div>
     ${previewButton}
-    <button id="journal-reset-button" type="button" hx-post="/api/journal/edit" hx-target="#main-content" hx-swap="innerHTML" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10" hx-swap-oob="true">${resetLabel}</button>
+    ${resetButton}
   `;
 }
 
