@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { serve, type ServerType } from "@hono/node-server";
@@ -250,10 +251,94 @@ function resolveJournalUiMode(requested?: string): JournalUiMode {
   return requested?.trim().toLowerCase() === "dev" ? "dev" : "prod";
 }
 
+type JournalBenchmarkSample = {
+  id: string;
+  text: string;
+  title: string;
+};
+
+type JournalBenchmarkSampleNav = {
+  id: string;
+  nextId?: string;
+  prevId?: string;
+  title: string;
+};
+
+const JOURNAL_DEV_BENCHMARK_SAMPLES_FILE = "sample-data/journal-llm-samples-prose-college-balance.json";
+let journalDevBenchmarkSamplesCache: JournalBenchmarkSample[] | null = null;
+
+function getJournalDevBenchmarkSamples(): JournalBenchmarkSample[] {
+  if (journalDevBenchmarkSamplesCache) {
+    return journalDevBenchmarkSamplesCache;
+  }
+
+  try {
+    const raw = readFileSync(JOURNAL_DEV_BENCHMARK_SAMPLES_FILE, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      journalDevBenchmarkSamplesCache = [];
+      return journalDevBenchmarkSamplesCache;
+    }
+
+    journalDevBenchmarkSamplesCache = parsed
+      .map((sample) => {
+        const id = typeof sample?.id === "string" ? sample.id.trim() : "";
+        const title = typeof sample?.title === "string" ? sample.title.trim() : "";
+        const text = typeof sample?.text === "string" ? sample.text.trim() : "";
+        if (!id || !title || !text) {
+          return null;
+        }
+        return { id, title, text };
+      })
+      .filter((sample): sample is JournalBenchmarkSample => sample !== null);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown error";
+    console.error(`[journal-dev-benchmark] could not load sample file "${JOURNAL_DEV_BENCHMARK_SAMPLES_FILE}": ${message}`);
+    journalDevBenchmarkSamplesCache = [];
+  }
+
+  return journalDevBenchmarkSamplesCache;
+}
+
+function composeJournalDevBenchmarkText(sample: JournalBenchmarkSample): string {
+  return `${sample.title}\n\n${sample.text}`.trim();
+}
+
+function renderJournalDevBenchmarkList(options?: { missingId?: string }) {
+  const samples = getJournalDevBenchmarkSamples();
+  const missingId = options?.missingId?.trim();
+  const missingHtml = missingId
+    ? `<section class="mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/30 bg-amber-500/10 p-4 text-sm text-amber-100 sm:max-w-3xl">Sample <code>${escapeHtml(missingId)}</code> not found.</section>`
+    : "";
+
+  const listHtml = samples.length === 0
+    ? `<p class="text-sm text-slate-300">No benchmark samples found in <code>${escapeHtml(JOURNAL_DEV_BENCHMARK_SAMPLES_FILE)}</code>.</p>`
+    : `<ul class="grid gap-2">${samples
+      .map((sample) => `<li><a href="/journal-dev-benchmark/${encodeURIComponent(sample.id)}" class="inline-flex items-center gap-2 rounded-xl border border-cyan-300/35 bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/20"><span class="font-mono text-xs text-cyan-200">${escapeHtml(sample.id)}</span><span>${escapeHtml(sample.title)}</span></a></li>`)
+      .join("")}</ul>`;
+
+  return `
+    ${missingHtml}
+    <section class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 shadow-neon sm:max-w-3xl sm:p-5">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-xl font-bold tracking-tight text-white sm:text-2xl">Journal Dev Benchmark Samples</h2>
+        <a href="/journal-dev" class="rounded-xl border border-white/20 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Open /journal-dev</a>
+      </div>
+      <p class="mb-3 text-sm text-slate-300">Source file: <code>${escapeHtml(JOURNAL_DEV_BENCHMARK_SAMPLES_FILE)}</code></p>
+      ${listHtml}
+    </section>
+  `;
+}
+
+function canSaveJournalCandidates(viewer: Viewer) {
+  return viewer.role !== "guest" && Boolean(viewer.authUser);
+}
+
 function renderJournalLlmControls(params?: {
   compareModels?: boolean;
   finalized?: boolean;
   parsedOnce?: boolean;
+  parsedPromptText?: string;
   parsedOutputJson?: string;
   selectedModel?: string;
   uiMode?: JournalUiMode;
@@ -261,6 +346,7 @@ function renderJournalLlmControls(params?: {
   const compareModels = Boolean(params?.compareModels);
   const finalized = Boolean(params?.finalized);
   const parsedOnce = Boolean(params?.parsedOnce);
+  const parsedPromptText = params?.parsedPromptText?.trim() ?? "";
   const parsedOutputJson = params?.parsedOutputJson?.trim() ?? "";
   const selectedModel = params?.selectedModel ?? resolveJournalSelectedModel();
   const uiMode = params?.uiMode ?? "prod";
@@ -313,16 +399,28 @@ function renderJournalLlmControls(params?: {
       <div class="mt-3 flex flex-wrap items-center gap-3">
         ${parseButton}
       </div>
-      ${parsedOutputJson
-    ? `<section class="mt-3 rounded-xl border border-cyan-300/20 bg-slate-950/60 p-3">
-            <div class="flex items-center justify-between gap-2">
-              <p class="text-xs uppercase tracking-wide text-cyan-300/80">Debug: Parsed LLM Output</p>
-              <button type="button" data-copy-target="journal-llm-debug-output" class="inline-flex items-center gap-1 rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/20" aria-label="Copy debug output">
+      ${parsedPromptText
+    ? `<section class="mt-3 min-w-0 overflow-hidden rounded-xl border border-cyan-300/20 bg-slate-950/60 p-3">
+            <div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
+              <p class="min-w-0 break-words text-xs uppercase tracking-wide text-cyan-300/80">Debug: Prompt sent to LLM ${selectedModel ? `\`${escapeHtml(selectedModel)}\`` : ""}</p>
+              <button type="button" data-copy-target="journal-llm-debug-prompt" class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/20" aria-label="Copy LLM prompt">
                 <svg aria-hidden="true" viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current"><path d="M16 1H6C4.9 1 4 1.9 4 3v12h2V3h10V1zm3 4H10c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h9c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H10V7h9v14z"/></svg>
                 <span>Copy</span>
               </button>
             </div>
-            <pre id="journal-llm-debug-output" class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-700/70 bg-slate-950 px-2 py-2 text-[11px] leading-relaxed text-cyan-100">${escapeHtml(parsedOutputJson)}</pre>
+            <pre id="journal-llm-debug-prompt" class="mt-2 max-h-64 w-full max-w-full min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-slate-700/70 bg-slate-950 px-2 py-2 text-[11px] leading-relaxed text-cyan-100">${escapeHtml(parsedPromptText)}</pre>
+          </section>`
+    : ""}
+      ${parsedOutputJson
+    ? `<section class="mt-3 min-w-0 overflow-hidden rounded-xl border border-cyan-300/20 bg-slate-950/60 p-3">
+            <div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
+              <p class="min-w-0 break-words text-xs uppercase tracking-wide text-cyan-300/80">Debug: Parsed LLM Output</p>
+              <button type="button" data-copy-target="journal-llm-debug-output" class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/20" aria-label="Copy debug output">
+                <svg aria-hidden="true" viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current"><path d="M16 1H6C4.9 1 4 1.9 4 3v12h2V3h10V1zm3 4H10c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h9c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H10V7h9v14z"/></svg>
+                <span>Copy</span>
+              </button>
+            </div>
+            <pre id="journal-llm-debug-output" class="mt-2 max-h-64 w-full max-w-full min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-slate-700/70 bg-slate-950 px-2 py-2 text-[11px] leading-relaxed text-cyan-100">${escapeHtml(parsedOutputJson)}</pre>
           </section>`
     : ""}
     </section>
@@ -449,6 +547,7 @@ async function finalizeJournal(userId: string, journalId: string): Promise<Journ
 }
 
 function journalShell(options?: {
+  benchmarkSample?: JournalBenchmarkSampleNav | null;
   compareModels?: boolean;
   finalized?: boolean;
   journalId?: string;
@@ -462,6 +561,7 @@ function journalShell(options?: {
   const compareModels = Boolean(options?.compareModels);
   const uiMode = options?.uiMode ?? "prod";
   const selectedModel = options?.selectedModel ?? resolveJournalSelectedModel();
+  const benchmarkSample = options?.benchmarkSample ?? null;
   const readOnlyAttrs = finalized ? " readonly disabled" : "";
   const readOnlyClass = finalized ? " opacity-60 cursor-not-allowed bg-slate-800/80 border-slate-500/40" : "";
   const journalPlaceholder = `Today’s session with my coach Jelena was focused on..
@@ -478,10 +578,26 @@ Off court I kept things simple with a short walk, a mobility routine, and extra 
         <div>
           <p class="text-xs uppercase tracking-[0.28em] text-cyan-300/80">Journal</p>
           <h2 class="mt-1 text-xl font-bold tracking-tight text-white sm:text-2xl">Journal</h2>
-          <p class="mt-1 text-sm text-slate-300">Write your journal entry and incorporate goals, practices, matches, diet, and exercises. For semicolon-delimited lines, field names are optional and can be inferred by order.</p>
+          <p class="mt-1 text-sm text-slate-300">Write your journal entry and incorporate goals, practices, matches, diet, and exercises</p>
         </div>
         <a href="/" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Home</a>
       </div>
+      ${benchmarkSample
+      ? `<section class="mb-3 rounded-2xl border border-cyan-300/30 bg-cyan-500/10 p-3 text-sm text-cyan-100">
+          <p class="text-xs uppercase tracking-wide text-cyan-300/80">Benchmark Sample</p>
+          <p class="mt-1 font-semibold">${escapeHtml(benchmarkSample.title)}</p>
+          <p class="mt-1 font-mono text-xs text-cyan-200">${escapeHtml(benchmarkSample.id)}</p>
+          <div class="mt-2 grid grid-cols-3 gap-2">
+            ${benchmarkSample.prevId
+        ? `<a href="/journal-dev-benchmark/${encodeURIComponent(benchmarkSample.prevId)}" class="inline-flex min-h-8 items-center justify-center rounded-lg border border-amber-300/45 bg-amber-500/25 px-2 py-1 text-xs font-semibold text-amber-50 transition hover:bg-amber-500/35">Prev</a>`
+        : `<span aria-disabled="true" class="inline-flex min-h-8 cursor-not-allowed items-center justify-center rounded-lg border border-slate-500/35 bg-slate-700/30 px-2 py-1 text-xs font-semibold text-slate-400 select-none">Prev</span>`}
+            <a href="/journal-dev-benchmark" class="inline-flex min-h-8 items-center justify-center rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/20">List</a>
+            ${benchmarkSample.nextId
+        ? `<a href="/journal-dev-benchmark/${encodeURIComponent(benchmarkSample.nextId)}" class="inline-flex min-h-8 items-center justify-center rounded-lg border border-amber-300/45 bg-amber-500/25 px-2 py-1 text-xs font-semibold text-amber-50 transition hover:bg-amber-500/35">Next</a>`
+        : `<span aria-disabled="true" class="inline-flex min-h-8 cursor-not-allowed items-center justify-center rounded-lg border border-slate-500/35 bg-slate-700/30 px-2 py-1 text-xs font-semibold text-slate-400 select-none">Next</span>`}
+          </div>
+        </section>`
+      : ""}
       <form hx-post="/api/journal/preview" hx-target="#journal-preview" hx-swap="innerHTML" class="grid gap-3">
         <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="${escapeHtml(journalPlaceholder)}" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}">${escapeHtml(rawText)}</textarea>
         <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" />
@@ -629,11 +745,13 @@ function renderJournalPreview(params: {
   finalized?: boolean;
   journalId: string;
   parsedOutputJson?: string;
+  promptText?: string;
   rawText?: string;
   selectedModel?: string;
   uiMode?: JournalUiMode;
+  allowSave?: boolean;
 }) {
-  const { journalId, candidates, compareModels, errors, finalized, parsedOutputJson, rawText, compareResults = [], selectedModel, uiMode = "prod" } = params;
+  const { journalId, candidates, compareModels, errors, finalized, parsedOutputJson, promptText, rawText, compareResults = [], selectedModel, uiMode = "prod", allowSave = true } = params;
   const noCandidatesHtml = candidates.length === 0 && errors.length === 0
     ? `<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">No candidate entries found. Use one entry per line, for example: <code>goal: Keep first serve above 60%</code>.</section>`
     : "";
@@ -678,8 +796,10 @@ function renderJournalPreview(params: {
             <input type="hidden" name="journalUiMode" value="${uiMode}" />
             ${renderJournalCandidateFields(candidate)}
             <div class="flex flex-wrap items-center gap-2">
-              <button type="submit" data-submitting-text="Saving..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400">Confirm & Save</button>
-              <button type="button" hx-post="/api/journal/dismiss" hx-target="#journal-item-${previewId}" hx-swap="outerHTML" hx-vals='{"journalId":"${escapeHtml(journalId)}","candidateIndex":"${index}","journalUiMode":"${uiMode}"}' class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Dismiss</button>
+              ${allowSave
+          ? `<button type="submit" data-submitting-text="Saving..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400">Confirm & Save</button>
+              <button type="button" hx-post="/api/journal/dismiss" hx-target="#journal-item-${previewId}" hx-swap="outerHTML" hx-vals='{"journalId":"${escapeHtml(journalId)}","candidateIndex":"${index}","journalUiMode":"${uiMode}"}' class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Dismiss</button>`
+          : `<p class="rounded-xl border border-amber-300/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">Sign in to save or dismiss candidates. Preview parsing is available without auth.</p>`}
             </div>
             <p class="form-status min-h-5 text-sm font-medium text-emerald-300"></p>
           </form>
@@ -695,6 +815,7 @@ function renderJournalPreview(params: {
     compareModels,
     finalized: Boolean(finalized),
     parsedOnce: true,
+    parsedPromptText: promptText,
     parsedOutputJson,
     selectedModel,
     uiMode,
@@ -713,6 +834,7 @@ async function computeJournalPreviewCandidates(params: {
 }): Promise<{
   compareResults: JournalModelComparison[];
   items: StructuredIngestInput[];
+  promptText?: string;
   parsedOutputJson?: string;
   result: IngestResult;
   usedFallback: boolean;
@@ -744,6 +866,7 @@ async function computeJournalPreviewCandidates(params: {
     durationMs: number;
     error?: string;
     model: string;
+    promptText?: string;
     parsedOutputJson?: string;
     result?: IngestResult;
   }> => {
@@ -758,11 +881,12 @@ async function computeJournalPreviewCandidates(params: {
           model,
           durationMs,
           error: `Schema validation failed (${result.errors.length} errors)`,
+          promptText: llmResult.promptText,
           parsedOutputJson: debugOutput,
           result,
         };
       }
-      return { model, durationMs, parsedOutputJson: debugOutput, result };
+      return { model, durationMs, promptText: llmResult.promptText, parsedOutputJson: debugOutput, result };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown LLM extraction error.";
       const rawOutputUnknown = (error as { rawOutputText?: unknown })?.rawOutputText;
@@ -788,13 +912,17 @@ async function computeJournalPreviewCandidates(params: {
   let usedFallback = false;
   let compareResults: JournalModelComparison[] = [];
   let items: StructuredIngestInput[];
+  let promptText: string | undefined;
   let parsedOutputJson: string | undefined;
   let result: IngestResult;
   if (journalLlmEnabled && selectedModel) {
     const primaryAttempt = await runModelAttempt(selectedModel);
     if (compareModels) {
       const compareModelsList = getJournalModelOptions().filter((model) => model !== selectedModel);
-      const alternateAttempts = await Promise.all(compareModelsList.map((model) => runModelAttempt(model)));
+      const alternateAttempts: Array<Awaited<ReturnType<typeof runModelAttempt>>> = [];
+      for (const model of compareModelsList) {
+        alternateAttempts.push(await runModelAttempt(model));
+      }
       compareResults = [primaryAttempt, ...alternateAttempts].map((attempt) => ({
         model: attempt.model,
         durationMs: attempt.durationMs,
@@ -805,6 +933,7 @@ async function computeJournalPreviewCandidates(params: {
 
     if (primaryAttempt.result?.accepted) {
       items = primaryAttempt.result.candidates;
+      promptText = primaryAttempt.promptText;
       parsedOutputJson = primaryAttempt.parsedOutputJson;
       result = primaryAttempt.result;
       logIngestEvent("journal_llm_extract_success", {
@@ -815,6 +944,7 @@ async function computeJournalPreviewCandidates(params: {
       });
     } else {
       usedFallback = true;
+      promptText = primaryAttempt.promptText;
       parsedOutputJson = primaryAttempt.parsedOutputJson;
       logIngestEvent("journal_llm_extract_failure", {
         journalId: journalLogId,
@@ -847,7 +977,7 @@ async function computeJournalPreviewCandidates(params: {
     });
   }
 
-  return { items, parsedOutputJson, result, usedFallback, compareResults };
+  return { items, promptText, parsedOutputJson, result, usedFallback, compareResults };
 }
 
 // Dispatches update/delete based on kind
@@ -1042,6 +1172,55 @@ app.get("/journal-dev", async (c) => {
   }));
 });
 
+app.get("/journal-dev-benchmark", async (c) => {
+  const viewer = c.get("viewer");
+  const missingId = String(c.req.query("missing") ?? "").trim();
+  c.header("Cache-Control", "no-store");
+  return c.html(page({
+    viewer,
+    route: "journal-dev",
+    flash: getFlash(c),
+    bodyContent: renderJournalDevBenchmarkList({ missingId: missingId || undefined }),
+  }));
+});
+
+app.get("/journal-dev-benchmark/list", async (c) => {
+  const missingId = String(c.req.query("missing") ?? "").trim();
+  const redirectSuffix = missingId ? `?missing=${encodeURIComponent(missingId)}` : "";
+  return c.redirect(`/journal-dev-benchmark${redirectSuffix}`);
+});
+
+app.get("/journal-dev-benchmark/:sampleId", async (c) => {
+  const viewer = c.get("viewer");
+  const sampleId = c.req.param("sampleId").trim();
+  const samples = getJournalDevBenchmarkSamples();
+  const sampleIndex = samples.findIndex((candidate) => candidate.id === sampleId);
+  const sample = sampleIndex >= 0 ? samples[sampleIndex] : null;
+  if (!sample) {
+    return c.redirect(`/journal-dev-benchmark?missing=${encodeURIComponent(sampleId)}`);
+  }
+  const prevSample = sampleIndex > 0 ? samples[sampleIndex - 1] : null;
+  const nextSample = sampleIndex < samples.length - 1 ? samples[sampleIndex + 1] : null;
+
+  c.header("Cache-Control", "no-store");
+  return c.html(page({
+    viewer,
+    route: "journal-dev",
+    flash: getFlash(c),
+    bodyContent: journalShell({
+      rawText: composeJournalDevBenchmarkText(sample),
+      selectedModel: resolveJournalSelectedModel(),
+      uiMode: "dev",
+      benchmarkSample: {
+        id: sample.id,
+        title: sample.title,
+        prevId: prevSample?.id,
+        nextId: nextSample?.id,
+      },
+    }),
+  }));
+});
+
 // ---------------------------------------------------------------------------
 // Demo routes — full page shell, JS handles everything client-side
 // ---------------------------------------------------------------------------
@@ -1101,7 +1280,6 @@ app.get("/api/entry-launcher", async (c) => {
 // Journal preview parser (HTMX fragment target: #journal-preview)
 app.post("/api/journal/preview", async (c) => {
   const viewer = c.get("viewer");
-  requireAuth(viewer);
 
   const body = await c.req.parseBody();
   const text = String(body.text ?? "").trim();
@@ -1117,34 +1295,42 @@ app.post("/api/journal/preview", async (c) => {
     return c.html(`<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">Enter journal text before previewing.</section>`);
   }
 
-  const journal = await upsertDraftJournal(viewer.authUser.id, text, requestedJournalId);
-  const { items, result, compareResults, parsedOutputJson } = await computeJournalPreviewCandidates({
+  const canSave = canSaveJournalCandidates(viewer);
+  let journalId = requestedJournalId ?? `benchmark-${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
+  if (canSave) {
+    const journal = await upsertDraftJournal(viewer.authUser!.id, text, requestedJournalId);
+    journalId = journal.id;
+  }
+
+  const { items, result, compareResults, parsedOutputJson, promptText } = await computeJournalPreviewCandidates({
     compareModels,
-    journalLogId: journal.id,
+    journalLogId: journalId,
     selectedModel,
     text,
-    userId: viewer.authUser.id,
+    userId: canSave ? viewer.authUser!.id : "journal-dev-benchmark-preview",
   });
 
   if (items.length === 0) {
     return c.html(renderJournalPreview({
-      journalId: journal.id,
+      journalId,
       candidates: [],
       compareModels,
       errors: [],
       selectedModel,
       compareResults,
+      promptText,
       parsedOutputJson,
       uiMode,
+      allowSave: canSave,
     }));
   }
 
-  if (db) {
+  if (db && canSave) {
     for (const [index, candidate] of result.candidates.entries()) {
       await db
         .insert(journalSubmissionCandidates)
         .values({
-          journalId: journal.id,
+          journalId,
           candidateIndex: index,
           kind: candidate.kind,
           confidence: Math.round(candidate.confidence * 100),
@@ -1166,14 +1352,16 @@ app.post("/api/journal/preview", async (c) => {
   }
 
   return c.html(renderJournalPreview({
-    journalId: journal.id,
+    journalId,
     candidates: result.candidates,
     compareModels,
     errors: result.errors,
     selectedModel,
     compareResults,
+    promptText,
     parsedOutputJson,
     uiMode,
+    allowSave: canSave,
   }));
 });
 

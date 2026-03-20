@@ -1,6 +1,7 @@
 /* ── Tennis Zero (Six Alpha) — Client JS ──────────────────────── */
 
 const STORAGE_KEY = "tennis-zero-six-alpha-v1";
+const JOURNAL_DEV_MODEL_STORAGE_KEY = "tennis-zero-six-alpha-journal-dev-model-v1";
 const HISTORY_PAGE_SIZE = 15;
 const VALID_KINDS = ["goal", "practice", "match", "diet", "exercise"];
 
@@ -98,6 +99,7 @@ function initHtmxHandlers() {
   // After HTMX swap, re-bind avatar preview if profile form was swapped in
   document.body.addEventListener("htmx:afterSwap", () => {
     bindAvatarPreview();
+    bindJournalDevModelPreference();
   });
 }
 
@@ -129,6 +131,26 @@ function initCopyButtons() {
         if (label) label.textContent = previousLabel;
       }, 1500);
     }
+  });
+}
+
+function bindJournalDevModelPreference() {
+  if (route !== "journal-dev") return;
+
+  const modelSelect = document.getElementById("journal-model-select");
+  const uiModeInput = document.getElementById("journal-ui-mode-input");
+  if (!(modelSelect instanceof HTMLSelectElement) || !(uiModeInput instanceof HTMLInputElement)) return;
+  if ((uiModeInput.value || "").trim().toLowerCase() !== "dev") return;
+
+  const storedModel = localStorage.getItem(JOURNAL_DEV_MODEL_STORAGE_KEY);
+  if (storedModel && Array.from(modelSelect.options).some((option) => option.value === storedModel)) {
+    modelSelect.value = storedModel;
+  }
+
+  if (modelSelect.dataset.modelPrefBound === "1") return;
+  modelSelect.dataset.modelPrefBound = "1";
+  modelSelect.addEventListener("change", () => {
+    localStorage.setItem(JOURNAL_DEV_MODEL_STORAGE_KEY, modelSelect.value);
   });
 }
 
@@ -853,6 +875,7 @@ window.addEventListener("DOMContentLoaded", () => {
     initCopyButtons();
     initAuthToggle();
     bindAvatarPreview();
+    bindJournalDevModelPreference();
     if (window.location.pathname === "/sign-in") {
       const signinBtn = document.getElementById("signin-open");
       if (signinBtn) signinBtn.classList.add("hidden");

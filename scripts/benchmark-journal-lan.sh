@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://192.168.86.21:1234/v1}"
-MODEL="${MODEL:-liquid/lfm2-24b-a2b}"
+MODEL="${MODEL:-gemma-3-1b-it-qat}"
 API_KEY="${API_KEY:-lmstudio}"
 SAMPLES_FILE="${SAMPLES_FILE:-sample-data/journal-llm-samples-prose-no-dates.json}"
 OUT_DIR="${OUT_DIR:-.runtime/journal-lan-benchmark-${MODEL//\//-}}"

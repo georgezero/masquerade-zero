@@ -453,6 +453,7 @@ export function parseJournalLlmJson(content: string): StructuredIngestInput[] {
 export type JournalLlmExtractionResult = {
   items: StructuredIngestInput[];
   parsedOutputJson: string;
+  promptText: string;
   rawOutputText: string;
 };
 
@@ -533,14 +534,33 @@ async function runCompletion(params: {
   systemPrompt: string;
   userPrompt: string;
 }) {
+  const temperature = params.model === "gemma-3-1b-it-qat" ? 0.8 : 0;
   return params.client.chat.completions.create({
     model: params.model,
-    temperature: 0,
+    temperature,
     messages: [
       { role: "system", content: params.systemPrompt },
       { role: "user", content: params.userPrompt },
     ],
   });
+}
+
+function renderPromptDebug(params: {
+  model: string;
+  systemPrompt: string;
+  userPrompt: string;
+  phase?: string;
+}) {
+  const phaseLabel = params.phase?.trim() ? ` (${params.phase.trim()})` : "";
+  return [
+    `model: ${params.model}${phaseLabel}`,
+    "",
+    "[system]",
+    params.systemPrompt,
+    "",
+    "[user]",
+    params.userPrompt,
+  ].join("\n");
 }
 
 function contentFromCompletion(completion: Awaited<ReturnType<typeof runCompletion>>): string {
@@ -644,22 +664,36 @@ export async function extractJournalCandidatesLLM(
   const today = todayIsoDate();
 
   if (env.JOURNAL_LLM_TWO_PASS) {
+    const passOneUserPrompt = `Today's date is ${today}.\n\nJournal entry:\n${text}`;
     const passOneCompletion = await runCompletion({
       client,
       model,
       systemPrompt: SYSTEM_PROMPT_PASS_ONE,
-      userPrompt: `Today's date is ${today}.\n\nJournal entry:\n${text}`,
+      userPrompt: passOneUserPrompt,
     });
     const passOneContent = contentFromCompletion(passOneCompletion);
+    const passOnePromptDebug = renderPromptDebug({
+      model,
+      systemPrompt: SYSTEM_PROMPT_PASS_ONE,
+      userPrompt: passOneUserPrompt,
+      phase: "pass-1",
+    });
     const passOneCandidates = parsePassOneCandidates(passOneContent);
     if (passOneCandidates.length === 0) {
+      const singlePassUserPrompt = `Today's date is ${today}.\n\nJournal entry:\n${text}`;
       const singlePassCompletion = await runCompletion({
         client,
         model,
         systemPrompt: SYSTEM_PROMPT_SINGLE_PASS,
-        userPrompt: `Today's date is ${today}.\n\nJournal entry:\n${text}`,
+        userPrompt: singlePassUserPrompt,
       });
       const singlePassContent = contentFromCompletion(singlePassCompletion);
+      const singlePassPromptDebug = renderPromptDebug({
+        model,
+        systemPrompt: SYSTEM_PROMPT_SINGLE_PASS,
+        userPrompt: singlePassUserPrompt,
+        phase: "single-pass-fallback",
+      });
       let parsedSinglePass: StructuredIngestInput[];
       try {
         parsedSinglePass = parseJournalLlmJson(singlePassContent);
@@ -668,23 +702,35 @@ export async function extractJournalCandidatesLLM(
         throw new JournalLlmExtractionError(message, singlePassContent);
       }
       const items = applyJournalDateDefaults(parsedSinglePass, today);
-      return { items, parsedOutputJson: JSON.stringify(items, null, 2), rawOutputText: singlePassContent };
+      return {
+        items,
+        parsedOutputJson: JSON.stringify(items, null, 2),
+        promptText: `${passOnePromptDebug}\n\n---\n\n${singlePassPromptDebug}`,
+        rawOutputText: singlePassContent,
+      };
     }
 
+    const passTwoUserPrompt = [
+      `Today's date is ${today}.`,
+      "Original journal entry:",
+      text,
+      "",
+      "Pass 1 recall candidates:",
+      JSON.stringify({ candidates: passOneCandidates }),
+    ].join("\n");
     const passTwoCompletion = await runCompletion({
       client,
       model,
       systemPrompt: SYSTEM_PROMPT_PASS_TWO,
-      userPrompt: [
-        `Today's date is ${today}.`,
-        "Original journal entry:",
-        text,
-        "",
-        "Pass 1 recall candidates:",
-        JSON.stringify({ candidates: passOneCandidates }),
-      ].join("\n"),
+      userPrompt: passTwoUserPrompt,
     });
     const passTwoContent = contentFromCompletion(passTwoCompletion);
+    const passTwoPromptDebug = renderPromptDebug({
+      model,
+      systemPrompt: SYSTEM_PROMPT_PASS_TWO,
+      userPrompt: passTwoUserPrompt,
+      phase: "pass-2",
+    });
     let parsedPassTwo: StructuredIngestInput[];
     try {
       parsedPassTwo = parseJournalLlmJson(passTwoContent);
@@ -693,16 +739,27 @@ export async function extractJournalCandidatesLLM(
       throw new JournalLlmExtractionError(message, passTwoContent);
     }
     const items = applyJournalDateDefaults(parsedPassTwo, today);
-    return { items, parsedOutputJson: JSON.stringify(items, null, 2), rawOutputText: passTwoContent };
+    return {
+      items,
+      parsedOutputJson: JSON.stringify(items, null, 2),
+      promptText: `${passOnePromptDebug}\n\n---\n\n${passTwoPromptDebug}`,
+      rawOutputText: passTwoContent,
+    };
   }
 
+  const singlePassUserPrompt = `Today's date is ${today}.\n\nJournal entry:\n${text}`;
   const completion = await runCompletion({
     client,
     model,
     systemPrompt: SYSTEM_PROMPT_SINGLE_PASS,
-    userPrompt: `Today's date is ${today}.\n\nJournal entry:\n${text}`,
+    userPrompt: singlePassUserPrompt,
   });
   const content = contentFromCompletion(completion);
+  const promptDebug = renderPromptDebug({
+    model,
+    systemPrompt: SYSTEM_PROMPT_SINGLE_PASS,
+    userPrompt: singlePassUserPrompt,
+  });
   let parsed: StructuredIngestInput[];
   try {
     parsed = parseJournalLlmJson(content);
@@ -711,5 +768,5 @@ export async function extractJournalCandidatesLLM(
     throw new JournalLlmExtractionError(message, content);
   }
   const items = applyJournalDateDefaults(parsed, today);
-  return { items, parsedOutputJson: JSON.stringify(items, null, 2), rawOutputText: content };
+  return { items, parsedOutputJson: JSON.stringify(items, null, 2), promptText: promptDebug, rawOutputText: content };
 }

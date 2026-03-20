@@ -467,6 +467,11 @@ Behavior:
 - Optional "Compare models" runs both models and shows side-by-side latency/candidate/error stats, while using the selected model's candidate cards for confirm/dismiss.
 - `/api/journal/preview-test` is available for local automation when `JOURNAL_LLM_TEST_PREVIEW_KEY` is set (header: `x-journal-test-key`).
 
+Deployment-specific endpoint strategy:
+- Local/Cloudflare+Raspberry Pi runtime can use a LAN endpoint in local `.env` (for example `http://192.168.86.28:1234/v1`).
+- Vercel runtime should use Vercel project env vars for a different endpoint if needed.
+- The app reads runtime env at startup, so the same codebase can point to different LLM backends per deployment.
+
 Why quality improved (March 17, 2026):
 - We forced a single output shape (JSON array only), which removed parser ambiguity.
 - We added an explicit "always emit best-fit entry" rule so prose notes do not get dropped.
@@ -622,7 +627,34 @@ The project includes `vercel.json` with `{ "framework": "hono" }`. Deploy with:
 vercel
 ```
 
-Set environment variables in the Vercel dashboard.
+Set environment variables in Vercel (dashboard or CLI). Example CLI commands:
+
+```bash
+# Production values
+printf '%s' 'true' | vercel env add JOURNAL_LLM_ENABLED production
+printf '%s' 'openai-compatible' | vercel env add JOURNAL_LLM_PROVIDER production
+printf '%s' 'https://your-vercel-llm-base-url/v1' | vercel env add JOURNAL_LLM_BASE_URL production
+printf '%s' 'lmstudio-or-provider-key' | vercel env add JOURNAL_LLM_API_KEY production
+printf '%s' 'openai/gpt-oss-20b' | vercel env add JOURNAL_LLM_MODEL production
+printf '%s' 'liquid/lfm2.5-1.2b' | vercel env add JOURNAL_LLM_SECONDARY_MODEL production
+printf '%s' 'gemma-3-1b-it-qat' | vercel env add JOURNAL_LLM_TERTIARY_MODEL production
+printf '%s' 'false' | vercel env add JOURNAL_LLM_USE_SECONDARY_BASE_URL production
+printf '%s' '12000' | vercel env add JOURNAL_LLM_TIMEOUT_MS production
+printf '%s' '12000' | vercel env add JOURNAL_LLM_MAX_INPUT_CHARS production
+```
+
+For preview/dev environments, repeat with `preview` or `development`:
+
+```bash
+printf '%s' 'https://your-preview-llm-base-url/v1' | vercel env add JOURNAL_LLM_BASE_URL preview
+printf '%s' 'https://your-dev-llm-base-url/v1' | vercel env add JOURNAL_LLM_BASE_URL development
+```
+
+Then redeploy:
+
+```bash
+vercel --prod
+```
 
 ### Cloudflare Tunnel
 
