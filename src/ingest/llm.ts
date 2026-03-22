@@ -492,6 +492,53 @@ const SYSTEM_PROMPT_SINGLE_PASS = [
   "9. Return [] only if there is truly no relevant signal.",
 ].join("\n");
 
+// Compact variant: ~40% fewer tokens, disambiguates practice vs exercise,
+// shows multi-entry pattern explicitly. Preferred for ≤3B parameter models.
+export const SYSTEM_PROMPT_COMPACT = [
+  "Extract structured entries from a tennis journal. Output ONLY a JSON array, nothing else.",
+  "",
+  "Entry format: {\"kind\":\"...\",\"fields\":{...},\"confidence\":0.9,\"warnings\":[]}",
+  "",
+  "Kinds and fields:",
+  "- practice (on-court tennis session): date, workedOn, withCoach(true/false), coachName(null), notes",
+  "- match (competitive game played): date, opponent, score, notes",
+  "- diet (food, meals, nutrition): date, summary",
+  "- exercise (off-court: gym, cardio, bike, mobility, stretching): date, durationMin, exerciseType(Strength|Cardio|Mobility|Recovery|Other), notes",
+  "- goal (weekly training plan): weekStart, planText",
+  "",
+  "Rules:",
+  "1. A single journal may produce multiple entries. Example: tennis + gym + dinner = [practice, exercise, diet].",
+  "2. Always emit at least one entry. Never return [].",
+  "3. Leave date blank if not stated in the text. Defaults: withCoach=false, coachName=null, durationMin=30, exerciseType=Other.",
+  "4. JSON array only. No markdown fences, no explanation text.",
+].join("\n");
+
+// Sentiment/tagging prompt — returns a single object, not an array.
+// Extracts mood, intensity, format, and free tags from a journal entry.
+// Designed to work well on 1B-class models as a lightweight complement to
+// structured extraction.
+export const SYSTEM_PROMPT_SENTIMENT = [
+  "Analyze a tennis journal entry and output a single JSON object. No other text.",
+  "",
+  "Output format:",
+  "{\"mood\":\"...\",\"intensity\":\"...\",\"format\":\"...\",\"tags\":[],\"confidence\":0.9}",
+  "",
+  "Fields:",
+  "- mood: overall emotional tone of the day → positive | neutral | negative",
+  "- intensity: effort level of the primary activity → high | medium | low",
+  "- format: tennis session type → formal | informal",
+  "  formal = coached session or competitive match",
+  "  informal = all other sessions (solo, unstructured, recovery, cross-training)",
+  "- tags: array of any that apply from this list:",
+  "  tactical, physical, mental, coach, match-play, recovery, nutrition, social, breakthrough, struggle, fun",
+  "- confidence: 0.0-1.0",
+  "",
+  "Rules:",
+  "1. JSON object only. No markdown fences, no explanation.",
+  "2. Exactly one value each for mood, intensity, format.",
+  "3. tags may be [] or contain multiple values — only use words from the list above.",
+].join("\n");
+
 const SYSTEM_PROMPT_PASS_ONE = [
   "You are pass 1 of a 2-pass journal extraction pipeline.",
   "Goal: maximize recall of meaningful tennis, goal, diet, and exercise signals from freeform journal text.",
@@ -527,6 +574,29 @@ const SYSTEM_PROMPT_PASS_TWO = [
   "Output format (strict):",
   "[{\"kind\":\"goal|practice|match|diet|exercise\",\"fields\":{},\"confidence\":0.0,\"warnings\":[]}]",
 ].join("\n");
+
+/**
+ * Returns true for models whose parameter count is likely ≤3B.
+ * These benefit from the compact prompt with fewer rules and clearer examples.
+ * Pattern matches: "1b", "1.2b", "1.5b", "2b", "2.7b", etc.
+ */
+export function isSmallModel(model: string): boolean {
+  return /1b[^0-9]|1b$|[0-9]\.[0-9]+b([^0-9]|$)|^[23]b([^0-9]|$)|[^0-9][23]b([^0-9]|$)/i.test(model);
+}
+
+/**
+ * Selects the system prompt for a single-pass extraction.
+ * Env var JOURNAL_LLM_PROMPT_VARIANT overrides auto-detection:
+ *   "compact"   → always use compact prompt
+ *   "standard"  → always use standard single-pass prompt
+ *   (unset)     → auto-detect from model name
+ */
+function selectSinglePassPrompt(model: string): string {
+  const override = (process.env.JOURNAL_LLM_PROMPT_VARIANT ?? "").trim().toLowerCase();
+  if (override === "compact") return SYSTEM_PROMPT_COMPACT;
+  if (override === "standard") return SYSTEM_PROMPT_SINGLE_PASS;
+  return isSmallModel(model) ? SYSTEM_PROMPT_COMPACT : SYSTEM_PROMPT_SINGLE_PASS;
+}
 
 async function runCompletion(params: {
   client: OpenAiChatClient;
@@ -684,7 +754,7 @@ export async function extractJournalCandidatesLLM(
       const singlePassCompletion = await runCompletion({
         client,
         model,
-        systemPrompt: SYSTEM_PROMPT_SINGLE_PASS,
+        systemPrompt: selectSinglePassPrompt(model),
         userPrompt: singlePassUserPrompt,
       });
       const singlePassContent = contentFromCompletion(singlePassCompletion);
@@ -751,7 +821,7 @@ export async function extractJournalCandidatesLLM(
   const completion = await runCompletion({
     client,
     model,
-    systemPrompt: SYSTEM_PROMPT_SINGLE_PASS,
+    systemPrompt: selectSinglePassPrompt(model),
     userPrompt: singlePassUserPrompt,
   });
   const content = contentFromCompletion(completion);

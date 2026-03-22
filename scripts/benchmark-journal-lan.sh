@@ -5,7 +5,9 @@ BASE_URL="${BASE_URL:-http://192.168.86.21:1234/v1}"
 MODEL="${MODEL:-gemma-3-1b-it-qat}"
 API_KEY="${API_KEY:-lmstudio}"
 SAMPLES_FILE="${SAMPLES_FILE:-sample-data/journal-llm-samples-prose-no-dates.json}"
-OUT_DIR="${OUT_DIR:-.runtime/journal-lan-benchmark-${MODEL//\//-}}"
+# PROMPT_VARIANT: "auto" (default), "standard", or "compact"
+# auto = use compact for ≤3B models (matches "1b", "1.2b", "2b", etc.), standard otherwise
+PROMPT_VARIANT="${PROMPT_VARIANT:-auto}"
 REQ_TIMEOUT_SEC="${REQ_TIMEOUT_SEC:-180}"
 
 if ! command -v jq >/dev/null 2>&1; then
@@ -13,9 +15,7 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "$OUT_DIR"
-
-SYSTEM_PROMPT=$(cat <<'EOF'
+SYSTEM_PROMPT_STANDARD=$(cat <<'EOF'
 You convert tennis journal text into structured JSON entries.
 Convert input text into one or more entries using only this schema:
 Goal: weekStart (YYYY-MM-DD), planText
@@ -35,6 +35,47 @@ Rules:
 EOF
 )
 
+# Compact variant: ~40% fewer tokens, disambiguates practice vs exercise,
+# makes multi-entry requirement explicit. Better for ≤3B parameter models.
+SYSTEM_PROMPT_COMPACT=$(cat <<'EOF'
+Extract structured entries from a tennis journal. Output ONLY a JSON array, nothing else.
+
+Entry format: {"kind":"...","fields":{...},"confidence":0.9,"warnings":[]}
+
+Kinds and fields:
+- practice (on-court tennis session): date, workedOn, withCoach(true/false), coachName(null), notes
+- match (competitive game played): date, opponent, score, notes
+- diet (food, meals, nutrition): date, summary
+- exercise (off-court: gym, cardio, bike, mobility, stretching): date, durationMin, exerciseType(Strength|Cardio|Mobility|Recovery|Other), notes
+- goal (weekly training plan): weekStart, planText
+
+Rules:
+1. A single journal may produce multiple entries. Example: tennis + gym + dinner = [practice, exercise, diet].
+2. Always emit at least one entry. Never return [].
+3. Leave date blank if not stated in the text. Defaults: withCoach=false, coachName=null, durationMin=30, exerciseType=Other.
+4. JSON array only. No markdown fences, no explanation text.
+EOF
+)
+
+# Auto-select prompt variant based on model name when PROMPT_VARIANT=auto.
+# Matches small models: 1b, 1.2b, 1.5b, 2b, 2.7b, etc. (but not 7b, 20b).
+if [ "$PROMPT_VARIANT" = "auto" ]; then
+  if echo "$MODEL" | grep -qiE '1b[^0-9]|1b$|[0-9]\.[0-9]+b([^0-9]|$)'; then
+    PROMPT_VARIANT="compact"
+  else
+    PROMPT_VARIANT="standard"
+  fi
+fi
+
+if [ "$PROMPT_VARIANT" = "compact" ]; then
+  SYSTEM_PROMPT="$SYSTEM_PROMPT_COMPACT"
+else
+  SYSTEM_PROMPT="$SYSTEM_PROMPT_STANDARD"
+fi
+
+OUT_DIR="${OUT_DIR:-.runtime/journal-lan-benchmark-${MODEL//\//-}-${PROMPT_VARIANT}}"
+mkdir -p "$OUT_DIR"
+
 pass_count=0
 fail_count=0
 total=0
@@ -52,6 +93,9 @@ while IFS= read -r row_b64; do
   out_meta="$OUT_DIR/${total}-${id}.meta.txt"
 
   payload="$(jq -nc --arg model "$MODEL" --arg sys "$SYSTEM_PROMPT" --arg usr "Today's date is 2026-03-18.\n\nJournal entry:\n$text" '{model:$model,temperature:0,messages:[{role:"system",content:$sys},{role:"user",content:$usr}]}')"
+
+  # Brief pause between API calls to avoid overwhelming the local server
+  if [ "$total" -gt 1 ]; then sleep "${INTER_SAMPLE_SLEEP_SEC:-3}"; fi
 
   start_ms=$(date +%s%3N)
   http_code=$(curl -sS -m "$REQ_TIMEOUT_SEC" "$BASE_URL/chat/completions" \
@@ -111,8 +155,14 @@ done < <(jq -r '.[] | @base64' "$SAMPLES_FILE")
 
 echo "============================================================"
 echo "MODEL=$MODEL"
+echo "PROMPT_VARIANT=$PROMPT_VARIANT"
 echo "BASE_URL=$BASE_URL"
 echo "TOTAL=$total PASS=$pass_count FAIL=$fail_count"
 echo "ARTIFACTS=$OUT_DIR"
+
+# Run scorer unless suppressed (set BENCHMARK_SKIP_SCORE=1 when orchestrator calls separately)
+if [ "${BENCHMARK_SKIP_SCORE:-0}" != "1" ] && command -v node >/dev/null 2>&1 && [ -f "scripts/score-journal-benchmark.js" ]; then
+  node scripts/score-journal-benchmark.js "$SAMPLES_FILE" "$OUT_DIR" || true
+fi
 
 [ "$fail_count" -eq 0 ]
