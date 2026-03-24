@@ -511,6 +511,7 @@ Reference docs:
 - Prose sample capture summary (`openai/gpt-oss-20b`): `docs/journal-llm-prose-capture-summary-gpt-oss-20b.md`
 - Qwen 9B benchmark (`/no_think` vs default, plus openai comparison): `docs/journal-llm-qwen9b-no-think-benchmark.md`
 - API/script testing guide: `docs/journal-llm-api-testing.md`
+- Journal dev benchmark eval UI + TODOs (`/journal-dev-benchmark`): `docs/journal-dev-benchmark-eval-ui.md`
 
 ---
 

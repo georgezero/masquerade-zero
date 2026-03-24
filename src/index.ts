@@ -6,6 +6,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { trimTrailingSlash } from "hono/trailing-slash";
 
 import {
   createDiet,
@@ -35,7 +36,7 @@ import { db } from "./db/index.js";
 import { journalSubmissionCandidates, journalSubmissionEntries, journalSubmissions } from "./db/schema.js";
 import { IngestService } from "./ingest/service.js";
 import { parseFreeformJournalToStructuredItems } from "./ingest/freeform.js";
-import { extractJournalCandidatesLLM } from "./ingest/llm.js";
+import { extractJournalCandidatesLLM, extractJournalSentimentLLM, type JournalLlmSentimentResult } from "./ingest/llm.js";
 import { PostgresIngestRuntime } from "./ingest/runtime.js";
 import { ingestApiRequestSchema } from "./ingest/schemas.js";
 import type { IngestItem, IngestResult, IngestValidationError, StructuredIngestInput } from "./ingest/types.js";
@@ -70,6 +71,8 @@ function isValidKind(value: string): value is (typeof VALID_KINDS)[number] {
 // ---------------------------------------------------------------------------
 
 const app = new Hono<{ Variables: AppVariables }>();
+
+app.use(trimTrailingSlash({ alwaysRedirect: true }));
 
 // Static assets
 app.use("/app.css", serveStatic({ path: "./public/app.css" }));
@@ -252,12 +255,23 @@ function resolveJournalUiMode(requested?: string): JournalUiMode {
 }
 
 type JournalBenchmarkSample = {
+  expectedEntryKinds?: Array<(typeof VALID_KINDS)[number]>;
+  expectedSentiment?: JournalExpectedSentiment;
   id: string;
   text: string;
   title: string;
 };
 
+type JournalExpectedSentiment = {
+  format?: "formal" | "informal";
+  intensity?: "high" | "medium" | "low";
+  mood?: "positive" | "neutral" | "negative";
+  tags?: string[];
+};
+
 type JournalBenchmarkSampleNav = {
+  expectedEntryKinds?: JournalBenchmarkSample["expectedEntryKinds"];
+  expectedSentiment?: JournalBenchmarkSample["expectedSentiment"];
   id: string;
   nextId?: string;
   prevId?: string;
@@ -280,28 +294,348 @@ function getJournalDevBenchmarkSamples(): JournalBenchmarkSample[] {
       return journalDevBenchmarkSamplesCache;
     }
 
-    journalDevBenchmarkSamplesCache = parsed
-      .map((sample) => {
-        const id = typeof sample?.id === "string" ? sample.id.trim() : "";
-        const title = typeof sample?.title === "string" ? sample.title.trim() : "";
-        const text = typeof sample?.text === "string" ? sample.text.trim() : "";
-        if (!id || !title || !text) {
-          return null;
-        }
-        return { id, title, text };
-      })
-      .filter((sample): sample is JournalBenchmarkSample => sample !== null);
+    const parsedSamples: JournalBenchmarkSample[] = [];
+    for (const sample of parsed) {
+      if (typeof sample !== "object" || sample === null) {
+        continue;
+      }
+      const sampleRecord = sample as Record<string, unknown>;
+      const id = typeof sampleRecord.id === "string" ? sampleRecord.id.trim() : "";
+      const title = typeof sampleRecord.title === "string" ? sampleRecord.title.trim() : "";
+      const text = typeof sampleRecord.text === "string" ? sampleRecord.text.trim() : "";
+      if (!id || !title || !text) {
+        continue;
+      }
+      const expectedSentimentRecord =
+        typeof sampleRecord.expectedSentiment === "object" && sampleRecord.expectedSentiment !== null
+          ? (sampleRecord.expectedSentiment as Record<string, unknown>)
+          : null;
+      const expectedEntryKindsFromList = Array.isArray(sampleRecord.expectedEntryKinds)
+        ? (sampleRecord.expectedEntryKinds as unknown[])
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim().toLowerCase())
+          .filter((value): value is (typeof VALID_KINDS)[number] => isValidKind(value))
+        : [];
+      const expectedEntryKindsFromStructured = Array.isArray(sampleRecord.expected)
+        ? (sampleRecord.expected as unknown[])
+          .flatMap((item) => {
+            if (typeof item !== "object" || item === null) {
+              return [];
+            }
+            const kindValue = (item as Record<string, unknown>).kind;
+            if (typeof kindValue !== "string") {
+              return [];
+            }
+            const normalizedKind = kindValue.trim().toLowerCase();
+            return isValidKind(normalizedKind) ? [normalizedKind] : [];
+          })
+        : [];
+      const expectedEntryKinds = [...expectedEntryKindsFromList, ...expectedEntryKindsFromStructured];
+      const mood = typeof expectedSentimentRecord?.mood === "string"
+        ? expectedSentimentRecord.mood.trim().toLowerCase()
+        : "";
+      const intensity = typeof expectedSentimentRecord?.intensity === "string"
+        ? expectedSentimentRecord.intensity.trim().toLowerCase()
+        : "";
+      const format = typeof expectedSentimentRecord?.format === "string"
+        ? expectedSentimentRecord.format.trim().toLowerCase()
+        : "";
+      const tags = Array.isArray(expectedSentimentRecord?.tags)
+        ? (expectedSentimentRecord.tags as unknown[])
+          .filter((tag): tag is string => typeof tag === "string")
+          .map((tag: string) => tag.trim().toLowerCase())
+          .filter((tag: string) => Boolean(tag))
+        : [];
+      const expectedSentiment: JournalExpectedSentiment = {
+        mood: mood === "positive" || mood === "neutral" || mood === "negative" ? mood : undefined,
+        intensity: intensity === "high" || intensity === "medium" || intensity === "low" ? intensity : undefined,
+        format: format === "formal" || format === "informal" ? format : undefined,
+        tags: tags.length > 0 ? tags : undefined,
+      };
+      const hasExpectedSentiment = Boolean(expectedSentiment.mood || expectedSentiment.intensity || expectedSentiment.format || expectedSentiment.tags?.length);
+      parsedSamples.push({
+        id,
+        title,
+        text,
+        expectedEntryKinds: expectedEntryKinds.length > 0 ? Array.from(new Set(expectedEntryKinds)) : undefined,
+        expectedSentiment: hasExpectedSentiment ? expectedSentiment : undefined,
+      });
+    }
+    journalDevBenchmarkSamplesCache = parsedSamples;
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown error";
     console.error(`[journal-dev-benchmark] could not load sample file "${JOURNAL_DEV_BENCHMARK_SAMPLES_FILE}": ${message}`);
     journalDevBenchmarkSamplesCache = [];
   }
 
-  return journalDevBenchmarkSamplesCache;
+  return journalDevBenchmarkSamplesCache ?? [];
 }
 
 function composeJournalDevBenchmarkText(sample: JournalBenchmarkSample): string {
   return `${sample.title}\n\n${sample.text}`.trim();
+}
+
+function moodChipClass(mood: "positive" | "neutral" | "negative") {
+  if (mood === "positive") return "border-emerald-300/40 bg-emerald-500/15 text-emerald-100";
+  if (mood === "negative") return "border-rose-300/40 bg-rose-500/15 text-rose-100";
+  return "border-slate-300/35 bg-slate-500/15 text-slate-100";
+}
+
+function intensityChipClass(intensity: "high" | "medium" | "low") {
+  if (intensity === "high") return "border-amber-300/45 bg-amber-500/15 text-amber-100";
+  if (intensity === "low") return "border-sky-300/45 bg-sky-500/15 text-sky-100";
+  return "border-indigo-300/45 bg-indigo-500/15 text-indigo-100";
+}
+
+function formatChipClass(format: "formal" | "informal") {
+  if (format === "formal") return "border-violet-300/45 bg-violet-500/15 text-violet-100";
+  return "border-cyan-300/45 bg-cyan-500/15 text-cyan-100";
+}
+
+function renderExpectedSentimentChips(sentiment?: JournalBenchmarkSample["expectedSentiment"]) {
+  if (!sentiment) {
+    return "";
+  }
+  const visibleTags = (sentiment.tags ?? []).slice(0, 4);
+  const hiddenTagCount = Math.max(0, (sentiment.tags ?? []).length - visibleTags.length);
+  const tagsHtml = visibleTags
+    .map((tag) => `<span class="rounded-full border border-fuchsia-300/35 bg-fuchsia-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-fuchsia-100">${escapeHtml(tag)}</span>`)
+    .join("");
+  const moreHtml = hiddenTagCount > 0
+    ? `<span class="rounded-full border border-slate-400/35 bg-slate-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-200">+${hiddenTagCount} more</span>`
+    : "";
+  return `
+    <div class="mt-4 flex flex-wrap items-center gap-1.5">
+      ${sentiment.mood ? `<span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${moodChipClass(sentiment.mood)}">Mood: ${escapeHtml(sentiment.mood)}</span>` : ""}
+      ${sentiment.intensity ? `<span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${intensityChipClass(sentiment.intensity)}">Intensity: ${escapeHtml(sentiment.intensity)}</span>` : ""}
+      ${sentiment.format ? `<span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${formatChipClass(sentiment.format)}">Format: ${escapeHtml(sentiment.format)}</span>` : ""}
+      ${tagsHtml}
+      ${moreHtml}
+    </div>
+  `;
+}
+
+function formatPercent(value?: number) {
+  if (value == null || !Number.isFinite(value)) {
+    return "n/a";
+  }
+  return `${(value * 100).toFixed(0)}%`;
+}
+
+function uniqueKinds(kinds: string[]) {
+  const normalized = kinds
+    .map((kind) => kind.trim().toLowerCase())
+    .filter((kind): kind is (typeof VALID_KINDS)[number] => isValidKind(kind));
+  return Array.from(new Set(normalized));
+}
+
+function renderEntriesEvalSection(
+  expectedEntryKinds: JournalBenchmarkSample["expectedEntryKinds"],
+  candidates: IngestItem[],
+  model?: string,
+) {
+  if (!expectedEntryKinds || expectedEntryKinds.length === 0) {
+    return "";
+  }
+  const expected = uniqueKinds(expectedEntryKinds);
+  const predicted = uniqueKinds(candidates.map((candidate) => candidate.kind));
+  const expectedSet = new Set(expected);
+  const predictedSet = new Set(predicted);
+  const truePositives = expected.filter((kind) => predictedSet.has(kind)).length;
+  const falsePositives = predicted.filter((kind) => !expectedSet.has(kind)).length;
+  const falseNegatives = expected.filter((kind) => !predictedSet.has(kind)).length;
+  const precisionDenominator = truePositives + falsePositives;
+  const recallDenominator = truePositives + falseNegatives;
+  const precision = precisionDenominator > 0 ? truePositives / precisionDenominator : undefined;
+  const recall = recallDenominator > 0 ? truePositives / recallDenominator : undefined;
+  const f1 = precision != null && recall != null && precision + recall > 0
+    ? (2 * precision * recall) / (precision + recall)
+    : undefined;
+  const exactMatch = falsePositives === 0 && falseNegatives === 0;
+  const extraKinds = predicted.filter((kind) => !expectedSet.has(kind));
+  const overallScore = exactMatch ? 1 : f1;
+  const overallToneClass = "border-sky-300/45 bg-sky-500/20 text-sky-100 shadow-[0_0_16px_rgba(56,189,248,0.24)]";
+  const selectedModel = model?.trim() || "n/a";
+  const entriesEvalMarkdown = [
+    "## Parse Journal Eval",
+    `Model: ${selectedModel}`,
+    `Overall Score: ${formatPercent(overallScore)}`,
+    `Exact Set Match: ${exactMatch ? "yes" : "no"}`,
+    `Precision: ${formatPercent(precision)}`,
+    `Recall: ${formatPercent(recall)}`,
+    `F1: ${formatPercent(f1)}`,
+    `TP/FP/FN: ${truePositives}/${falsePositives}/${falseNegatives}`,
+    `Expected: ${expected.join(", ") || "none"}`,
+    `Predicted: ${predicted.join(", ") || "none"}`,
+    extraKinds.length > 0 ? `Extra predicted kinds: ${extraKinds.join(", ")}` : "Extra predicted kinds: none",
+  ].join("\n");
+
+  const expectedChips = expected.map((kind) => {
+    const matched = predictedSet.has(kind);
+    const classes = matched
+      ? "border-emerald-300/40 bg-emerald-500/15 text-emerald-100"
+      : "border-rose-300/45 bg-rose-500/15 text-rose-100";
+    return `<span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${classes}">${escapeHtml(kind)}</span>`;
+  }).join("");
+  const predictedChips = predicted.length > 0
+    ? predicted.map((kind) => {
+      const matched = expectedSet.has(kind);
+      const classes = matched
+        ? "border-emerald-300/40 bg-emerald-500/15 text-emerald-100"
+        : "border-amber-300/45 bg-amber-500/15 text-amber-100";
+      return `<span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${classes}">${escapeHtml(kind)}</span>`;
+    }).join("")
+    : `<span class="text-xs text-slate-400">No predicted kinds.</span>`;
+
+  return `<section class="mb-3 rounded-2xl border border-cyan-300/20 bg-slate-900/40 p-4 text-sm text-slate-200">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <p class="text-xs uppercase tracking-wide text-cyan-300/80">Parse Journal Eval</p>
+      <button type="button" data-copy-target="journal-entries-eval-copy" class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/20" aria-label="Copy entries eval markdown">
+        <svg aria-hidden="true" viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current"><path d="M16 1H6C4.9 1 4 1.9 4 3v12h2V3h10V1zm3 4H10c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h9c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H10V7h9v14z"/></svg>
+        <span>Copy Eval</span>
+      </button>
+    </div>
+    <p class="mt-1 text-xs text-slate-400">Model: <span class="font-mono">${escapeHtml(selectedModel)}</span></p>
+    <pre id="journal-entries-eval-copy" class="hidden">${escapeHtml(entriesEvalMarkdown)}</pre>
+    <div class="mt-2 flex flex-wrap items-center gap-2">
+      <div class="inline-flex items-baseline gap-2 rounded-xl border px-3 py-2 ${overallToneClass}">
+        <span class="text-xs font-semibold uppercase tracking-wide">Overall Score</span>
+        <span class="text-lg font-bold leading-none">${formatPercent(overallScore)}</span>
+      </div>
+      <p class="text-[10px] tracking-wide text-slate-400">overall = exact-set ? 1.0 : F1(kind set)</p>
+    </div>
+    <div class="mt-4 flex flex-wrap items-center gap-1.5">
+      <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${exactMatch ? "border-emerald-300/40 bg-emerald-500/15 text-emerald-100" : "border-amber-300/45 bg-amber-500/15 text-amber-100"}">Exact Set Match: ${exactMatch ? "yes" : "no"}</span>
+      <span class="rounded-full border border-slate-300/35 bg-slate-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-100">Precision: ${formatPercent(precision)}</span>
+      <span class="rounded-full border border-slate-300/35 bg-slate-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-100">Recall: ${formatPercent(recall)}</span>
+      <span class="rounded-full border border-slate-300/35 bg-slate-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-100">F1: ${formatPercent(f1)}</span>
+      <span class="rounded-full border border-slate-300/35 bg-slate-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-100">TP/FP/FN: ${truePositives}/${falsePositives}/${falseNegatives}</span>
+    </div>
+    <p class="mt-3 text-xs uppercase tracking-wide text-cyan-300/80">Expected</p>
+    <div class="mt-1 flex flex-wrap gap-1.5">${expectedChips}</div>
+    <p class="mt-3 text-xs uppercase tracking-wide text-cyan-300/80">Predicted</p>
+    <div class="mt-1 flex flex-wrap gap-1.5">${predictedChips}</div>
+    ${extraKinds.length > 0 ? `<p class="mt-2 text-xs text-amber-200">Extra predicted kinds: ${escapeHtml(extraKinds.join(", "))}</p>` : ""}
+  </section>`;
+}
+
+function renderSentimentEvalSection(expectedSentiment: JournalBenchmarkSample["expectedSentiment"], sentimentPreview: JournalSentimentPreview) {
+  if (!expectedSentiment) {
+    return "";
+  }
+  const moodMatch = expectedSentiment.mood ? expectedSentiment.mood === sentimentPreview.mood : undefined;
+  const intensityMatch = expectedSentiment.intensity ? expectedSentiment.intensity === sentimentPreview.intensity : undefined;
+  const formatMatch = expectedSentiment.format ? expectedSentiment.format === sentimentPreview.format : undefined;
+  const expectedTags = Array.from(new Set((expectedSentiment.tags ?? []).map((tag) => tag.trim().toLowerCase()).filter((tag) => tag.length > 0)));
+  const predictedTags = Array.from(new Set((sentimentPreview.tags ?? []).map((tag) => tag.trim().toLowerCase()).filter((tag) => tag.length > 0)));
+  const expectedTagSet = new Set(expectedTags);
+  const predictedTagSet = new Set(predictedTags);
+  const tagTp = expectedTags.filter((tag) => predictedTagSet.has(tag)).length;
+  const tagFp = predictedTags.filter((tag) => !expectedTagSet.has(tag)).length;
+  const tagFn = expectedTags.filter((tag) => !predictedTagSet.has(tag)).length;
+  const tagPrecision = tagTp + tagFp > 0 ? tagTp / (tagTp + tagFp) : undefined;
+  const tagRecall = tagTp + tagFn > 0 ? tagTp / (tagTp + tagFn) : undefined;
+  const tagF1 = tagPrecision != null && tagRecall != null && tagPrecision + tagRecall > 0
+    ? (2 * tagPrecision * tagRecall) / (tagPrecision + tagRecall)
+    : undefined;
+  const strictTagsMatch = expectedTags.length > 0 ? tagFp === 0 && tagFn === 0 : undefined;
+  const fieldMatches = [moodMatch, intensityMatch, formatMatch, strictTagsMatch].filter((value): value is boolean => value != null);
+  const exactAll = fieldMatches.length > 0 ? fieldMatches.every(Boolean) : undefined;
+  const scoredFields: number[] = [];
+  if (moodMatch != null) scoredFields.push(moodMatch ? 1 : 0);
+  if (intensityMatch != null) scoredFields.push(intensityMatch ? 1 : 0);
+  if (formatMatch != null) scoredFields.push(formatMatch ? 1 : 0);
+  if (expectedTags.length > 0) scoredFields.push(tagF1 ?? 0);
+  const overallScore = scoredFields.length > 0
+    ? scoredFields.reduce((sum, value) => sum + value, 0) / scoredFields.length
+    : undefined;
+  const extraPredictedTags = predictedTags.filter((tag) => !expectedTagSet.has(tag));
+  const overallToneClass = "border-sky-300/45 bg-sky-500/20 text-sky-100 shadow-[0_0_16px_rgba(56,189,248,0.24)]";
+  const selectedModel = sentimentPreview.model?.trim() || "n/a";
+  const sentimentEvalMarkdown = [
+    "## Parse Journal Sentiment Eval",
+    `Model: ${selectedModel}`,
+    `Overall Score: ${formatPercent(overallScore)}`,
+    `All-fields exact: ${exactAll == null ? "n/a" : exactAll ? "yes" : "no"}`,
+    `Mood match: ${moodMatch == null ? "n/a" : moodMatch ? "yes" : "no"} (expected=${expectedSentiment.mood ?? "n/a"}, predicted=${sentimentPreview.mood ?? "n/a"})`,
+    `Intensity match: ${intensityMatch == null ? "n/a" : intensityMatch ? "yes" : "no"} (expected=${expectedSentiment.intensity ?? "n/a"}, predicted=${sentimentPreview.intensity ?? "n/a"})`,
+    `Format match: ${formatMatch == null ? "n/a" : formatMatch ? "yes" : "no"} (expected=${expectedSentiment.format ?? "n/a"}, predicted=${sentimentPreview.format ?? "n/a"})`,
+    expectedTags.length > 0 ? `Tag F1: ${formatPercent(tagF1)}` : "Tag F1: n/a",
+    `Expected tags: ${expectedTags.join(", ") || "none"}`,
+    `Predicted tags: ${predictedTags.join(", ") || "none"}`,
+    extraPredictedTags.length > 0 ? `Extra predicted tags: ${extraPredictedTags.join(", ")}` : "Extra predicted tags: none",
+  ].join("\n");
+
+  const badge = (label: string, expected: string | undefined, predicted: string | undefined, matched: boolean | undefined) => {
+    const classes = matched == null
+      ? "border-slate-300/35 bg-slate-500/15 text-slate-100"
+      : matched
+        ? "border-emerald-300/40 bg-emerald-500/15 text-emerald-100"
+        : "border-rose-300/45 bg-rose-500/15 text-rose-100";
+    return `<span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${classes}">${escapeHtml(label)}: ${escapeHtml(expected ?? "n/a")} -> ${escapeHtml(predicted ?? "n/a")}</span>`;
+  };
+
+  const tagChips = (tags: string[], tone: "expected" | "predicted") => {
+    if (tags.length === 0) {
+      return `<span class="text-xs text-slate-400">none</span>`;
+    }
+    return tags.map((tag) => {
+      const isMatch = tone === "expected" ? predictedTagSet.has(tag) : expectedTagSet.has(tag);
+      const classes = isMatch
+        ? "border-emerald-300/40 bg-emerald-500/15 text-emerald-100"
+        : tone === "expected"
+          ? "border-rose-300/45 bg-rose-500/15 text-rose-100"
+          : "border-amber-300/45 bg-amber-500/15 text-amber-100";
+      return `<span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${classes}">${escapeHtml(tag)}</span>`;
+    }).join("");
+  };
+
+  return `<section class="mb-3 rounded-2xl border border-cyan-300/20 bg-slate-900/40 p-4 text-sm text-slate-200">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <p class="text-xs uppercase tracking-wide text-cyan-300/80">Parse Journal Sentiment Eval</p>
+      <button type="button" data-copy-target="journal-sentiment-eval-copy" class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/20" aria-label="Copy sentiment eval markdown">
+        <svg aria-hidden="true" viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current"><path d="M16 1H6C4.9 1 4 1.9 4 3v12h2V3h10V1zm3 4H10c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h9c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H10V7h9v14z"/></svg>
+        <span>Copy Eval</span>
+      </button>
+    </div>
+    <p class="mt-1 text-xs text-slate-400">Model: <span class="font-mono">${escapeHtml(selectedModel)}</span></p>
+    <pre id="journal-sentiment-eval-copy" class="hidden">${escapeHtml(sentimentEvalMarkdown)}</pre>
+    <div class="mt-2 flex flex-wrap items-center gap-2">
+      <div class="inline-flex items-baseline gap-2 rounded-xl border px-3 py-2 ${overallToneClass}">
+        <span class="text-xs font-semibold uppercase tracking-wide">Overall Score</span>
+        <span class="text-lg font-bold leading-none">${formatPercent(overallScore)}</span>
+      </div>
+      <p class="text-[10px] tracking-wide text-slate-400">overall = avg(mood, intensity, format${expectedTags.length > 0 ? ", tag-F1" : ""})</p>
+    </div>
+    <div class="mt-4 flex flex-wrap items-center gap-1.5">
+      <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${exactAll == null ? "border-slate-300/35 bg-slate-500/15 text-slate-100" : exactAll ? "border-emerald-300/40 bg-emerald-500/15 text-emerald-100" : "border-amber-300/45 bg-amber-500/15 text-amber-100"}">All-fields exact: ${exactAll == null ? "n/a" : exactAll ? "yes" : "no"}</span>
+      <span class="rounded-full border border-slate-300/35 bg-slate-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-100">Mood: ${moodMatch == null ? "n/a" : moodMatch ? "match" : "mismatch"}</span>
+      <span class="rounded-full border border-slate-300/35 bg-slate-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-100">Intensity: ${intensityMatch == null ? "n/a" : intensityMatch ? "match" : "mismatch"}</span>
+      <span class="rounded-full border border-slate-300/35 bg-slate-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-100">Format: ${formatMatch == null ? "n/a" : formatMatch ? "match" : "mismatch"}</span>
+      ${expectedTags.length > 0 ? `<span class="rounded-full border border-slate-300/35 bg-slate-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-100">Tag F1: ${formatPercent(tagF1)}</span>` : ""}
+    </div>
+    <div class="mt-3 flex flex-wrap items-center gap-1.5">
+      ${badge("mood", expectedSentiment.mood, sentimentPreview.mood, moodMatch)}
+      ${badge("intensity", expectedSentiment.intensity, sentimentPreview.intensity, intensityMatch)}
+      ${badge("format", expectedSentiment.format, sentimentPreview.format, formatMatch)}
+    </div>
+    <p class="mt-3 text-xs uppercase tracking-wide text-cyan-300/80">Expected Tags</p>
+    <div class="mt-1 flex flex-wrap gap-1.5">${tagChips(expectedTags, "expected")}</div>
+    <p class="mt-3 text-xs uppercase tracking-wide text-cyan-300/80">Predicted Tags</p>
+    <div class="mt-1 flex flex-wrap gap-1.5">${tagChips(predictedTags, "predicted")}</div>
+    ${extraPredictedTags.length > 0 ? `<p class="mt-2 text-xs text-amber-200">Extra predicted tags: ${escapeHtml(extraPredictedTags.join(", "))}</p>` : ""}
+  </section>`;
+}
+
+function renderExpectedEntryKindsChips(entryKinds?: Array<(typeof VALID_KINDS)[number]>) {
+  if (!entryKinds || entryKinds.length === 0) {
+    return "";
+  }
+  return `
+    <div class="mt-2 flex flex-wrap items-center gap-1.5">
+      ${entryKinds.map((kind) => `<span class="${journalTagClassForKind(kind)}">${escapeHtml(kind)}</span>`).join("")}
+    </div>
+  `;
 }
 
 function renderJournalDevBenchmarkList(options?: { missingId?: string }) {
@@ -334,29 +668,76 @@ function canSaveJournalCandidates(viewer: Viewer) {
   return viewer.role !== "guest" && Boolean(viewer.authUser);
 }
 
+function renderLlmDebugSections(params: {
+  debugOutputId: string;
+  debugPromptId: string;
+  parsedOutputJson?: string;
+  parsedPromptText?: string;
+  selectedModel?: string;
+}) {
+  const parsedPromptText = params.parsedPromptText?.trim() ?? "";
+  const parsedOutputJson = params.parsedOutputJson?.trim() ?? "";
+  const selectedModel = params.selectedModel?.trim() ?? "";
+  const sectionCount = Number(Boolean(parsedPromptText)) + Number(Boolean(parsedOutputJson));
+  if (sectionCount === 0) {
+    return "";
+  }
+  return `
+    <details class="mt-3 min-w-0 overflow-hidden rounded-xl border border-cyan-300/20 bg-slate-950/50 p-3">
+      <summary class="cursor-pointer select-none text-sm font-semibold text-cyan-100">Show Debug LLM Prompt and Output (${sectionCount})</summary>
+      ${parsedPromptText
+      ? `<section class="mt-2 min-w-0 overflow-hidden rounded-xl border border-cyan-300/20 bg-slate-950/60 p-3">
+          <div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
+            <p class="min-w-0 break-words text-xs uppercase tracking-wide text-cyan-300/80">Debug: Prompt sent to LLM ${selectedModel ? `\`${escapeHtml(selectedModel)}\`` : ""}</p>
+            <button type="button" data-copy-target="${params.debugPromptId}" class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/20" aria-label="Copy LLM prompt">
+              <svg aria-hidden="true" viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current"><path d="M16 1H6C4.9 1 4 1.9 4 3v12h2V3h10V1zm3 4H10c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h9c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H10V7h9v14z"/></svg>
+              <span>Copy</span>
+            </button>
+          </div>
+          <pre id="${params.debugPromptId}" class="mt-2 max-h-64 w-full max-w-full min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-slate-700/70 bg-slate-950 px-2 py-2 text-[11px] leading-relaxed text-cyan-100">${escapeHtml(parsedPromptText)}</pre>
+        </section>`
+      : ""}
+      ${parsedOutputJson
+      ? `<section class="mt-3 min-w-0 overflow-hidden rounded-xl border border-cyan-300/20 bg-slate-950/60 p-3">
+          <div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
+            <p class="min-w-0 break-words text-xs uppercase tracking-wide text-cyan-300/80">Debug: Parsed LLM Output</p>
+            <button type="button" data-copy-target="${params.debugOutputId}" class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/20" aria-label="Copy debug output">
+              <svg aria-hidden="true" viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current"><path d="M16 1H6C4.9 1 4 1.9 4 3v12h2V3h10V1zm3 4H10c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h9c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H10V7h9v14z"/></svg>
+              <span>Copy</span>
+            </button>
+          </div>
+          <pre id="${params.debugOutputId}" class="mt-2 max-h-64 w-full max-w-full min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-slate-700/70 bg-slate-950 px-2 py-2 text-[11px] leading-relaxed text-cyan-100">${escapeHtml(parsedOutputJson)}</pre>
+        </section>`
+      : ""}
+    </details>
+  `;
+}
+
 function renderJournalLlmControls(params?: {
   compareModels?: boolean;
+  compareSentimentModels?: boolean;
+  entriesParsedOutputJson?: string;
+  entriesParsedPromptText?: string;
+  entriesParsedOnce?: boolean;
   finalized?: boolean;
-  parsedOnce?: boolean;
-  parsedPromptText?: string;
-  parsedOutputJson?: string;
-  selectedModel?: string;
+  selectedEntriesModel?: string;
+  selectedSentimentModel?: string;
+  sentimentParsedOutputJson?: string;
+  sentimentParsedPromptText?: string;
+  sentimentParsedOnce?: boolean;
+  sentimentPreview?: JournalSentimentPreview;
   uiMode?: JournalUiMode;
 }) {
   const compareModels = Boolean(params?.compareModels);
+  const compareSentimentModels = Boolean(params?.compareSentimentModels);
   const finalized = Boolean(params?.finalized);
-  const parsedOnce = Boolean(params?.parsedOnce);
-  const parsedPromptText = params?.parsedPromptText?.trim() ?? "";
-  const parsedOutputJson = params?.parsedOutputJson?.trim() ?? "";
-  const selectedModel = params?.selectedModel ?? resolveJournalSelectedModel();
+  const entriesParsedOnce = Boolean(params?.entriesParsedOnce);
+  const sentimentParsedOnce = Boolean(params?.sentimentParsedOnce);
+  const selectedEntriesModel = params?.selectedEntriesModel ?? resolveJournalSelectedModel();
+  const selectedSentimentModel = params?.selectedSentimentModel ?? resolveJournalSelectedModel();
   const uiMode = params?.uiMode ?? "prod";
   const modelOptions = getJournalModelOptions();
   const disabledAttr = finalized ? " disabled" : "";
-  const parseButton = finalized
-    ? `<button id="journal-preview-button" type="button" class="rounded-xl border border-slate-500/40 bg-slate-700/40 px-4 py-2 text-sm font-semibold text-slate-300" disabled>Journal Finalized</button>`
-    : parsedOnce
-      ? `<button id="journal-preview-button" type="submit" data-submitting-text="Parsing..." class="rounded-xl bg-amber-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-amber-400">Re-Parse</button>`
-      : `<button id="journal-preview-button" type="submit" data-submitting-text="Parsing..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400">Parse</button>`;
 
   if (!journalLlmEnabled) {
     return `<section class="rounded-xl border border-amber-300/20 bg-amber-500/10 p-3 text-xs text-amber-100">LLM extraction is disabled or not configured. Preview will use deterministic parser fallback.</section>`;
@@ -369,60 +750,63 @@ function renderJournalLlmControls(params?: {
           <p class="text-lg font-bold tracking-tight text-white sm:text-xl">Parse Journal</p>
           <p class="mt-1 text-sm text-slate-300">Extract tennis content</p>
         </div>
-        <input type="hidden" name="journalModel" value="${escapeHtml(resolveJournalSelectedModel(env.JOURNAL_LLM_MODEL))}" />
+        <input type="hidden" name="journalModelEntries" value="${escapeHtml(resolveJournalSelectedModel(env.JOURNAL_LLM_MODEL))}" />
+        <input type="hidden" name="journalModelSentiment" value="${escapeHtml(resolveJournalSelectedModel(env.JOURNAL_LLM_MODEL))}" />
         <input type="hidden" name="compareModels" value="false" />
         <div class="mt-3 flex flex-wrap items-center gap-3">
-          ${parseButton}
+          <button id="journal-preview-button" type="submit" name="parseTarget" value="entries" data-parse-button="true" data-submitting-text="Parsing..." class="rounded-xl ${entriesParsedOnce ? "bg-amber-500 hover:bg-amber-400" : "bg-cyan-500 hover:bg-cyan-400"} px-4 py-2 text-sm font-bold text-slate-950 transition"${disabledAttr}>${entriesParsedOnce ? "Re-Parse" : "Parse"}</button>
         </div>
       </section>
     `;
   }
 
   return `
-    <section class="rounded-xl border border-cyan-300/20 bg-slate-900/40 p-3">
-      <div class="mb-3">
-        <p class="text-lg font-bold tracking-tight text-white sm:text-xl">Parse Journal</p>
-        <p class="mt-1 text-sm text-slate-300">Extract tennis content</p>
-      </div>
-      <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-        <label class="grid gap-1 text-sm font-medium text-slate-300">Model
-          <select id="journal-model-select" name="journalModel"${disabledAttr} class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2">
-            ${modelOptions.map((model) => `<option value="${escapeHtml(model)}"${model === selectedModel ? " selected" : ""}>${escapeHtml(model)}</option>`).join("")}
-          </select>
-        </label>
-        <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-300">
-          <input id="journal-compare-models" type="checkbox" name="compareModels" value="true"${compareModels ? " checked" : ""}${disabledAttr} class="h-4 w-4 rounded border-slate-500 bg-slate-800" />
-          Compare models
-        </label>
-      </div>
-      <p class="mt-2 text-xs text-slate-400">Use "Compare models" to see latency and candidate stats for both configured models while previewing with the selected model.</p>
-      <div class="mt-3 flex flex-wrap items-center gap-3">
-        ${parseButton}
-      </div>
-      ${parsedPromptText
-    ? `<section class="mt-3 min-w-0 overflow-hidden rounded-xl border border-cyan-300/20 bg-slate-950/60 p-3">
-            <div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
-              <p class="min-w-0 break-words text-xs uppercase tracking-wide text-cyan-300/80">Debug: Prompt sent to LLM ${selectedModel ? `\`${escapeHtml(selectedModel)}\`` : ""}</p>
-              <button type="button" data-copy-target="journal-llm-debug-prompt" class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/20" aria-label="Copy LLM prompt">
-                <svg aria-hidden="true" viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current"><path d="M16 1H6C4.9 1 4 1.9 4 3v12h2V3h10V1zm3 4H10c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h9c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H10V7h9v14z"/></svg>
-                <span>Copy</span>
-              </button>
-            </div>
-            <pre id="journal-llm-debug-prompt" class="mt-2 max-h-64 w-full max-w-full min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-slate-700/70 bg-slate-950 px-2 py-2 text-[11px] leading-relaxed text-cyan-100">${escapeHtml(parsedPromptText)}</pre>
-          </section>`
-    : ""}
-      ${parsedOutputJson
-    ? `<section class="mt-3 min-w-0 overflow-hidden rounded-xl border border-cyan-300/20 bg-slate-950/60 p-3">
-            <div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
-              <p class="min-w-0 break-words text-xs uppercase tracking-wide text-cyan-300/80">Debug: Parsed LLM Output</p>
-              <button type="button" data-copy-target="journal-llm-debug-output" class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-500/20" aria-label="Copy debug output">
-                <svg aria-hidden="true" viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current"><path d="M16 1H6C4.9 1 4 1.9 4 3v12h2V3h10V1zm3 4H10c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h9c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H10V7h9v14z"/></svg>
-                <span>Copy</span>
-              </button>
-            </div>
-            <pre id="journal-llm-debug-output" class="mt-2 max-h-64 w-full max-w-full min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-slate-700/70 bg-slate-950 px-2 py-2 text-[11px] leading-relaxed text-cyan-100">${escapeHtml(parsedOutputJson)}</pre>
-          </section>`
-    : ""}
+    <section class="grid gap-3">
+      <section class="rounded-xl border border-cyan-300/20 bg-slate-900/40 p-3">
+        <div class="mb-3">
+          <p class="text-lg font-bold tracking-tight text-white sm:text-xl">Parse Journal</p>
+          <p class="mt-1 text-sm text-slate-300">Extract structured entries</p>
+        </div>
+        <div class="grid gap-1">
+          <label class="text-sm font-medium text-slate-300">Model</label>
+          <div class="flex flex-wrap items-center gap-3">
+            <select id="journal-model-select-entries" name="journalModelEntries"${disabledAttr} class="min-w-0 flex-1 rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2">
+              ${modelOptions.map((model) => `<option value="${escapeHtml(model)}"${model === selectedEntriesModel ? " selected" : ""}>${escapeHtml(model)}</option>`).join("")}
+            </select>
+            <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-300">
+              <input id="journal-compare-models" type="checkbox" name="compareModels" value="true"${compareModels ? " checked" : ""}${disabledAttr} class="h-4 w-4 rounded border-slate-500 bg-slate-800" />
+              Compare models
+            </label>
+          </div>
+        </div>
+        <div class="mt-3">
+          <button type="submit" name="parseTarget" value="entries" data-parse-button="true" data-submitting-text="Parsing..." hx-target="#journal-entries-output" hx-swap="innerHTML" class="rounded-xl ${entriesParsedOnce ? "bg-amber-500 hover:bg-amber-400" : "bg-cyan-500 hover:bg-cyan-400"} px-4 py-2 text-sm font-bold text-slate-950 transition"${disabledAttr}>${entriesParsedOnce ? "Re-Parse" : "Parse"}</button>
+        </div>
+        <section id="journal-entries-output" class="mt-3"></section>
+      </section>
+
+      <section class="rounded-xl border border-cyan-300/20 bg-slate-900/40 p-3">
+        <div class="mb-3">
+          <p class="text-lg font-bold tracking-tight text-white sm:text-xl">Parse Journal Sentiment</p>
+          <p class="mt-1 text-sm text-slate-300">Extract mood, intensity, format, and tags</p>
+        </div>
+        <div class="grid gap-1">
+          <label class="text-sm font-medium text-slate-300">Model</label>
+          <div class="flex flex-wrap items-center gap-3">
+            <select id="journal-model-select-sentiment" name="journalModelSentiment"${disabledAttr} class="min-w-0 flex-1 rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2">
+              ${modelOptions.map((model) => `<option value="${escapeHtml(model)}"${model === selectedSentimentModel ? " selected" : ""}>${escapeHtml(model)}</option>`).join("")}
+            </select>
+            <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-300">
+              <input id="journal-compare-models-sentiment" type="checkbox" name="compareSentimentModels" value="true"${compareSentimentModels ? " checked" : ""}${disabledAttr} class="h-4 w-4 rounded border-slate-500 bg-slate-800" />
+              Compare models
+            </label>
+          </div>
+        </div>
+        <div class="mt-3">
+          <button type="submit" name="parseTarget" value="sentiment" data-parse-button="true" data-submitting-text="Parsing..." hx-target="#journal-sentiment-output" hx-swap="innerHTML" class="rounded-xl ${sentimentParsedOnce ? "bg-amber-500 hover:bg-amber-400" : "bg-cyan-500 hover:bg-cyan-400"} px-4 py-2 text-sm font-bold text-slate-950 transition"${disabledAttr}>${sentimentParsedOnce ? "Re-Parse Sentiment" : "Parse Sentiment"}</button>
+        </div>
+        <section id="journal-sentiment-output" class="mt-3"></section>
+      </section>
     </section>
   `;
 }
@@ -587,7 +971,13 @@ Off court I kept things simple with a short walk, a mobility routine, and extra 
           <p class="text-xs uppercase tracking-wide text-cyan-300/80">Benchmark Sample</p>
           <p class="mt-1 font-semibold">${escapeHtml(benchmarkSample.title)}</p>
           <p class="mt-1 font-mono text-xs text-cyan-200">${escapeHtml(benchmarkSample.id)}</p>
-          <div class="mt-2 grid grid-cols-3 gap-2">
+          ${benchmarkSample.expectedEntryKinds
+          ? `<p class="mt-4 text-xs uppercase tracking-wide text-cyan-300/80">Expected Entries</p>${renderExpectedEntryKindsChips(benchmarkSample.expectedEntryKinds)}`
+          : ""}
+          ${benchmarkSample.expectedSentiment
+          ? `<p class="mt-4 text-xs uppercase tracking-wide text-cyan-300/80">Expected Sentiment</p>${renderExpectedSentimentChips(benchmarkSample.expectedSentiment)}`
+          : ""}
+          <div class="mt-3 grid grid-cols-3 gap-2">
             ${benchmarkSample.prevId
         ? `<a href="/journal-dev-benchmark/${encodeURIComponent(benchmarkSample.prevId)}" class="inline-flex min-h-8 items-center justify-center rounded-lg border border-amber-300/45 bg-amber-500/25 px-2 py-1 text-xs font-semibold text-amber-50 transition hover:bg-amber-500/35">Prev</a>`
         : `<span aria-disabled="true" class="inline-flex min-h-8 cursor-not-allowed items-center justify-center rounded-lg border border-slate-500/35 bg-slate-700/30 px-2 py-1 text-xs font-semibold text-slate-400 select-none">Prev</span>`}
@@ -602,7 +992,8 @@ Off court I kept things simple with a short walk, a mobility routine, and extra 
         <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="${escapeHtml(journalPlaceholder)}" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}">${escapeHtml(rawText)}</textarea>
         <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" />
         <input id="journal-ui-mode-input" type="hidden" name="journalUiMode" value="${uiMode}" />
-        <div id="journal-llm-controls">${renderJournalLlmControls({ selectedModel, compareModels, finalized, uiMode, parsedOnce: false })}</div>
+        ${benchmarkSample ? `<input id="journal-benchmark-sample-id-input" type="hidden" name="benchmarkSampleId" value="${escapeHtml(benchmarkSample.id)}" />` : ""}
+        <div id="journal-llm-controls">${renderJournalLlmControls({ selectedEntriesModel: selectedModel, selectedSentimentModel: selectedModel, compareModels, finalized, uiMode, entriesParsedOnce: false, sentimentParsedOnce: false })}</div>
         <div class="flex flex-wrap items-center gap-3">
           ${resetButton}
           <p class="form-status min-h-0 text-sm font-medium text-emerald-300"></p>
@@ -630,7 +1021,7 @@ Off court I kept things simple with a short walk, a mobility routine, and extra 
     <textarea id="journal-textarea" name="text" rows="8"${readOnlyAttrs} placeholder="${escapeHtml(journalPlaceholder)}" class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2${readOnlyClass}" hx-swap-oob="true">${escapeHtml(journal.rawText)}</textarea>
     <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journal.id)}" hx-swap-oob="true" />
     <input id="journal-ui-mode-input" type="hidden" name="journalUiMode" value="${uiMode}" hx-swap-oob="true" />
-    <div id="journal-llm-controls" hx-swap-oob="outerHTML:#journal-llm-controls">${renderJournalLlmControls({ finalized, uiMode, parsedOnce: true })}</div>
+    <div id="journal-llm-controls" hx-swap-oob="outerHTML:#journal-llm-controls">${renderJournalLlmControls({ finalized, uiMode, entriesParsedOnce: true, sentimentParsedOnce: false })}</div>
     ${resetButton}
   `;
 }
@@ -640,6 +1031,9 @@ function renderJournalFeedbackOob(message: string) {
 }
 
 function renderJournalControls(journalId: string, finalized: boolean, uiMode: JournalUiMode) {
+  if (uiMode === "dev") {
+    return `<section id="journal-preview-controls"></section>`;
+  }
   if (finalized) {
     return `<section id="journal-preview-controls" class="rounded-2xl border border-slate-500/30 bg-slate-700/20 p-3 text-sm text-slate-200"><strong>Journal finalized.</strong> New Journal to start a new journal draft.</section>`;
   }
@@ -737,27 +1131,48 @@ type JournalModelComparison = {
   model: string;
 };
 
-function renderJournalPreview(params: {
+type JournalSentimentPreview = JournalLlmSentimentResult & {
+  durationMs: number;
+  error?: string;
+  model: string;
+};
+
+type JournalSentimentModelComparison = {
+  durationMs: number;
+  error?: string;
+  format?: "formal" | "informal";
+  intensity?: "high" | "medium" | "low";
+  model: string;
+  mood?: "positive" | "neutral" | "negative";
+  tagCount: number;
+};
+
+function renderEntriesParseOutput(params: {
+  allowSave?: boolean;
   candidates: IngestItem[];
-  compareModels?: boolean;
   compareResults?: JournalModelComparison[];
   errors: IngestValidationError[];
-  finalized?: boolean;
+  expectedEntryKinds?: JournalBenchmarkSample["expectedEntryKinds"];
   journalId: string;
   parsedOutputJson?: string;
-  promptText?: string;
-  rawText?: string;
+  parsedPromptText?: string;
   selectedModel?: string;
   uiMode?: JournalUiMode;
-  allowSave?: boolean;
 }) {
-  const { journalId, candidates, compareModels, errors, finalized, parsedOutputJson, promptText, rawText, compareResults = [], selectedModel, uiMode = "prod", allowSave = true } = params;
-  const noCandidatesHtml = candidates.length === 0 && errors.length === 0
-    ? `<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">No candidate entries found. Use one entry per line, for example: <code>goal: Keep first serve above 60%</code>.</section>`
-    : "";
-
+  const {
+    allowSave = true,
+    candidates,
+    compareResults = [],
+    errors,
+    expectedEntryKinds,
+    journalId,
+    parsedOutputJson,
+    parsedPromptText,
+    selectedModel,
+    uiMode = "prod",
+  } = params;
   const compareHtml = compareResults.length > 0
-    ? `<section class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 bg-slate-900/40 p-4 text-sm text-slate-200 sm:max-w-3xl">
+    ? `<section class="mb-3 rounded-2xl border border-cyan-300/20 bg-slate-900/40 p-4 text-sm text-slate-200">
       <p class="text-xs uppercase tracking-wide text-cyan-300/80">Model Compare</p>
       <div class="mt-2 grid gap-2 sm:grid-cols-2">${compareResults
         .map((result) => `<article class="rounded-xl border ${result.model === selectedModel ? "border-cyan-300/35 bg-cyan-500/10" : "border-slate-500/30 bg-slate-800/40"} p-3">
@@ -770,11 +1185,194 @@ function renderJournalPreview(params: {
         .join("")}</div>
     </section>`
     : "";
+  const errorHtml = errors.length > 0
+    ? `<section class="mb-3 rounded-2xl border border-rose-300/30 bg-rose-500/10 p-4 text-sm text-rose-100"><p class="font-semibold">Some lines could not be parsed/validated:</p><ul class="mt-2 grid gap-1">${errors.map((error) => `<li>• ${escapeHtml(error.message)}</li>`).join("")}</ul></section>`
+    : "";
+  const noCandidatesHtml = candidates.length === 0 && errors.length === 0
+    ? `<section class="mt-3 rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100">No candidate entries found. Use one entry per line, for example: <code>goal: Keep first serve above 60%</code>.</section>`
+    : "";
+  const showCandidateActions = uiMode !== "dev" && allowSave;
+  const cards = candidates.map((candidate, index) => {
+    const previewId = `journal-${index}-${candidate.kind}`;
+    const warnings = candidate.warnings.length > 0
+      ? `<div class="rounded-xl border border-amber-300/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">${candidate.warnings.map((warning) => escapeHtml(warning)).join(" ")}</div>`
+      : "";
+    return `
+      <section id="journal-item-${previewId}" class="mt-3 rounded-2xl border border-cyan-300/20 p-4 shadow-neon sm:p-5">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <span class="${journalTagClassForKind(candidate.kind)}">${escapeHtml(candidate.kind)}</span>
+          <span class="text-xs text-slate-400">Confidence ${(candidate.confidence * 100).toFixed(0)}%</span>
+        </div>
+        ${warnings}
+        <form hx-post="/api/journal/confirm" hx-target="#journal-item-${previewId}" hx-swap="outerHTML" class="mt-3 grid gap-3">
+          <input type="hidden" name="kind" value="${escapeHtml(candidate.kind)}" />
+          <input type="hidden" name="journalId" value="${escapeHtml(journalId)}" />
+          <input type="hidden" name="candidateIndex" value="${index}" />
+          <input type="hidden" name="journalUiMode" value="${uiMode}" />
+          ${renderJournalCandidateFields(candidate)}
+          <div class="flex flex-wrap items-center gap-2">
+            ${showCandidateActions
+              ? `<button type="submit" data-submitting-text="Saving..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400">Confirm & Save</button>
+                 <button type="button" hx-post="/api/journal/dismiss" hx-target="#journal-item-${previewId}" hx-swap="outerHTML" hx-vals='{"journalId":"${escapeHtml(journalId)}","candidateIndex":"${index}","journalUiMode":"${uiMode}"}' class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Dismiss</button>`
+              : ""}
+          </div>
+          <p class="form-status min-h-5 text-sm font-medium text-emerald-300"></p>
+        </form>
+      </section>
+    `;
+  }).join("");
+
+  const evalHtml = renderEntriesEvalSection(expectedEntryKinds, candidates, selectedModel);
+  const cardsSection = cards
+    ? `<details class="mt-3 rounded-2xl border border-cyan-300/20 bg-slate-900/30 p-3">
+      <summary class="cursor-pointer select-none text-sm font-semibold text-cyan-100">Show Parsed Entries (${candidates.length})</summary>
+      <div class="mt-2">${cards}</div>
+    </details>`
+    : "";
+  const content = `${evalHtml}${renderLlmDebugSections({
+    debugPromptId: "journal-llm-debug-prompt-entries",
+    debugOutputId: "journal-llm-debug-output-entries",
+    parsedPromptText,
+    parsedOutputJson,
+    selectedModel,
+  })}${errorHtml}${noCandidatesHtml}${cardsSection}${compareHtml}`;
+  return `<div id="journal-entries-output" hx-swap-oob="innerHTML:#journal-entries-output">${content}</div>`;
+}
+
+function renderSentimentParseOutput(params: {
+  compareResults?: JournalSentimentModelComparison[];
+  expectedSentiment?: JournalBenchmarkSample["expectedSentiment"];
+  parsedOutputJson?: string;
+  parsedPromptText?: string;
+  selectedModel?: string;
+  sentimentPreview: JournalSentimentPreview;
+}) {
+  const { compareResults = [], expectedSentiment, parsedOutputJson, parsedPromptText, selectedModel, sentimentPreview } = params;
+  const compareHtml = compareResults.length > 0
+    ? `<section class="mb-3 rounded-2xl border border-cyan-300/20 bg-slate-900/40 p-4 text-sm text-slate-200">
+      <p class="text-xs uppercase tracking-wide text-cyan-300/80">Sentiment Model Compare</p>
+      <div class="mt-2 grid gap-2 sm:grid-cols-2">${compareResults
+        .map((result) => `<article class="rounded-xl border ${result.model === selectedModel ? "border-cyan-300/35 bg-cyan-500/10" : "border-slate-500/30 bg-slate-800/40"} p-3">
+          <p class="text-xs text-slate-400">${result.model === selectedModel ? "Selected model" : "Alternate model"}</p>
+          <p class="mt-1 text-sm font-semibold text-slate-100">${escapeHtml(result.model)}</p>
+          <p class="mt-1 text-xs text-slate-300">Latency: ${result.durationMs}ms</p>
+          <p class="text-xs text-slate-300">Mood/Intensity/Format: ${escapeHtml(result.mood ?? "?")} / ${escapeHtml(result.intensity ?? "?")} / ${escapeHtml(result.format ?? "?")}</p>
+          <p class="text-xs text-slate-300">Tags: ${result.tagCount}</p>
+          <p class="text-xs ${result.error ? "text-rose-200" : "text-emerald-200"}">${escapeHtml(result.error ? `Error: ${result.error}` : "Parsed successfully")}</p>
+        </article>`)
+        .join("")}</div>
+    </section>`
+    : "";
+  const sentimentHtml = `<section class="mb-3 rounded-2xl border border-cyan-300/20 bg-slate-900/40 p-4 text-sm text-slate-200">
+      <p class="text-xs uppercase tracking-wide text-cyan-300/80">LLM Sentiment Output</p>
+      <p class="mt-1 text-xs text-slate-400">Model: ${escapeHtml(sentimentPreview.model)} • Latency: ${sentimentPreview.durationMs}ms</p>
+      ${sentimentPreview.error
+        ? `<p class="mt-2 rounded-xl border border-rose-300/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">${escapeHtml(sentimentPreview.error)}</p>`
+        : `<div class="mt-2 flex flex-wrap items-center gap-1.5">
+            <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${moodChipClass(sentimentPreview.mood)}">Mood: ${escapeHtml(sentimentPreview.mood)}</span>
+            <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${intensityChipClass(sentimentPreview.intensity)}">Intensity: ${escapeHtml(sentimentPreview.intensity)}</span>
+            <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${formatChipClass(sentimentPreview.format)}">Format: ${escapeHtml(sentimentPreview.format)}</span>
+            ${(sentimentPreview.tags ?? []).slice(0, 6).map((tag) => `<span class="rounded-full border border-fuchsia-300/35 bg-fuchsia-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-fuchsia-100">${escapeHtml(tag)}</span>`).join("")}
+            ${sentimentPreview.confidence != null ? `<span class="rounded-full border border-slate-400/35 bg-slate-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-200">Confidence: ${Math.round(sentimentPreview.confidence * 100)}%</span>` : ""}
+          </div>`}
+    </section>`;
+  const evalHtml = renderSentimentEvalSection(expectedSentiment, sentimentPreview);
+  const content = `${evalHtml}${renderLlmDebugSections({
+    debugPromptId: "journal-llm-debug-prompt-sentiment",
+    debugOutputId: "journal-llm-debug-output-sentiment",
+    parsedPromptText,
+    parsedOutputJson,
+    selectedModel,
+  })}${sentimentHtml}`;
+  return `<div id="journal-sentiment-output" hx-swap-oob="innerHTML:#journal-sentiment-output">${content}${compareHtml}</div>`;
+}
+
+function renderJournalPreview(params: {
+  candidates: IngestItem[];
+  compareModels?: boolean;
+  compareResults?: JournalModelComparison[];
+  entriesParsedOutputJson?: string;
+  entriesParsedPromptText?: string;
+  entriesParsedOnce?: boolean;
+  errors: IngestValidationError[];
+  finalized?: boolean;
+  journalId: string;
+  selectedEntriesModel?: string;
+  selectedSentimentModel?: string;
+  sentimentParsedOutputJson?: string;
+  sentimentParsedPromptText?: string;
+  sentimentParsedOnce?: boolean;
+  sentimentPreview?: JournalSentimentPreview;
+  showNoCandidatesMessage?: boolean;
+  rawText?: string;
+  uiMode?: JournalUiMode;
+  allowSave?: boolean;
+}) {
+  const {
+    journalId,
+    candidates,
+    compareModels,
+    compareResults = [],
+    entriesParsedOutputJson,
+    entriesParsedPromptText,
+    entriesParsedOnce,
+    errors,
+    finalized,
+    rawText,
+    selectedEntriesModel,
+    selectedSentimentModel,
+    sentimentParsedOutputJson,
+    sentimentParsedPromptText,
+    sentimentParsedOnce,
+    sentimentPreview,
+    showNoCandidatesMessage = true,
+    uiMode = "prod",
+    allowSave = true,
+  } = params;
+  const noCandidatesHtml = showNoCandidatesMessage && candidates.length === 0 && errors.length === 0
+    ? `<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">No candidate entries found. Use one entry per line, for example: <code>goal: Keep first serve above 60%</code>.</section>`
+    : "";
+
+  const compareHtml = compareResults.length > 0
+    ? `<section class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 bg-slate-900/40 p-4 text-sm text-slate-200 sm:max-w-3xl">
+      <p class="text-xs uppercase tracking-wide text-cyan-300/80">Model Compare</p>
+      <div class="mt-2 grid gap-2 sm:grid-cols-2">${compareResults
+        .map((result) => `<article class="rounded-xl border ${result.model === selectedEntriesModel ? "border-cyan-300/35 bg-cyan-500/10" : "border-slate-500/30 bg-slate-800/40"} p-3">
+          <p class="text-xs text-slate-400">${result.model === selectedEntriesModel ? "Selected model" : "Alternate model"}</p>
+          <p class="mt-1 text-sm font-semibold text-slate-100">${escapeHtml(result.model)}</p>
+          <p class="mt-1 text-xs text-slate-300">Latency: ${result.durationMs}ms</p>
+          <p class="text-xs text-slate-300">Candidates: ${result.candidateCount}</p>
+          <p class="text-xs ${result.error ? "text-rose-200" : "text-emerald-200"}">${escapeHtml(result.error ? `Error: ${result.error}` : "Validated successfully")}</p>
+        </article>`)
+        .join("")}</div>
+    </section>`
+    : "";
 
   const errorHtml = errors.length > 0
     ? `<section class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-rose-300/30 bg-rose-500/10 p-4 text-sm text-rose-100 sm:max-w-3xl"><p class="font-semibold">Some lines could not be parsed/validated:</p><ul class="mt-2 grid gap-1">${errors.map((error) => `<li>• ${escapeHtml(error.message)}</li>`).join("")}</ul></section>`
     : "";
+  const sentimentHtml = sentimentPreview
+    ? `<section class="glass mx-auto mb-3 w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 bg-slate-900/40 p-4 text-sm text-slate-200 sm:max-w-3xl">
+      <p class="text-xs uppercase tracking-wide text-cyan-300/80">LLM Sentiment Output</p>
+      <p class="mt-1 text-xs text-slate-400">Model: ${escapeHtml(sentimentPreview.model)} • Latency: ${sentimentPreview.durationMs}ms</p>
+      ${sentimentPreview.error
+        ? `<p class="mt-2 rounded-xl border border-rose-300/35 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">${escapeHtml(sentimentPreview.error)}</p>`
+        : `<div class="mt-2 flex flex-wrap items-center gap-1.5">
+            <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${moodChipClass(sentimentPreview.mood)}">Mood: ${escapeHtml(sentimentPreview.mood)}</span>
+            <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${intensityChipClass(sentimentPreview.intensity)}">Intensity: ${escapeHtml(sentimentPreview.intensity)}</span>
+            <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${formatChipClass(sentimentPreview.format)}">Format: ${escapeHtml(sentimentPreview.format)}</span>
+            ${(sentimentPreview.tags ?? [])
+              .slice(0, 6)
+              .map((tag) => `<span class="rounded-full border border-fuchsia-300/35 bg-fuchsia-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-fuchsia-100">${escapeHtml(tag)}</span>`)
+              .join("")}
+            ${sentimentPreview.confidence != null
+              ? `<span class="rounded-full border border-slate-400/35 bg-slate-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-200">Confidence: ${Math.round(sentimentPreview.confidence * 100)}%</span>`
+              : ""}
+          </div>`}
+    </section>`
+    : "";
 
+  const showCandidateActions = uiMode !== "dev" && allowSave;
   const cards = candidates
     .map((candidate, index) => {
       const previewId = `journal-${index}-${candidate.kind}`;
@@ -796,10 +1394,10 @@ function renderJournalPreview(params: {
             <input type="hidden" name="journalUiMode" value="${uiMode}" />
             ${renderJournalCandidateFields(candidate)}
             <div class="flex flex-wrap items-center gap-2">
-              ${allowSave
+              ${showCandidateActions
           ? `<button type="submit" data-submitting-text="Saving..." class="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-bold text-slate-950 transition hover:bg-cyan-400">Confirm & Save</button>
               <button type="button" hx-post="/api/journal/dismiss" hx-target="#journal-item-${previewId}" hx-swap="outerHTML" hx-vals='{"journalId":"${escapeHtml(journalId)}","candidateIndex":"${index}","journalUiMode":"${uiMode}"}' class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Dismiss</button>`
-          : `<p class="rounded-xl border border-amber-300/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">Sign in to save or dismiss candidates. Preview parsing is available without auth.</p>`}
+          : ""}
             </div>
             <p class="form-status min-h-5 text-sm font-medium text-emerald-300"></p>
           </form>
@@ -813,16 +1411,21 @@ function renderJournalPreview(params: {
     : `<input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" hx-swap-oob="true" /><input id="journal-ui-mode-input" type="hidden" name="journalUiMode" value="${uiMode}" hx-swap-oob="true" />`;
   const controlsOob = `<div id="journal-llm-controls" hx-swap-oob="outerHTML:#journal-llm-controls">${renderJournalLlmControls({
     compareModels,
+    entriesParsedOutputJson,
+    entriesParsedPromptText,
+    entriesParsedOnce,
     finalized: Boolean(finalized),
-    parsedOnce: true,
-    parsedPromptText: promptText,
-    parsedOutputJson,
-    selectedModel,
+    selectedEntriesModel,
+    selectedSentimentModel,
+    sentimentParsedOutputJson,
+    sentimentParsedPromptText,
+    sentimentParsedOnce,
+    sentimentPreview,
     uiMode,
   })}</div>`;
   const journalControlsOob = renderJournalControlsOob(journalId, Boolean(finalized), uiMode);
 
-  return `${oob}${controlsOob}${journalControlsOob}${compareHtml}${errorHtml}${noCandidatesHtml}${cards}`;
+  return `${oob}${controlsOob}${journalControlsOob}${compareHtml}${sentimentHtml}${errorHtml}${noCandidatesHtml}${cards}`;
 }
 
 async function computeJournalPreviewCandidates(params: {
@@ -978,6 +1581,109 @@ async function computeJournalPreviewCandidates(params: {
   }
 
   return { items, promptText, parsedOutputJson, result, usedFallback, compareResults };
+}
+
+async function computeJournalSentimentPreview(params: {
+  compareModels?: boolean;
+  model: string;
+  text: string;
+}): Promise<{
+  compareResults: JournalSentimentModelComparison[];
+  parsedOutputJson?: string;
+  promptText?: string;
+  sentimentPreview: JournalSentimentPreview;
+}> {
+  const { compareModels = false, model, text } = params;
+
+  const runSentimentAttempt = async (candidateModel: string): Promise<{
+    durationMs: number;
+    error?: string;
+    model: string;
+    parsedOutputJson?: string;
+    promptText?: string;
+    sentiment?: JournalLlmSentimentResult;
+  }> => {
+    const startedAt = Date.now();
+    try {
+      const sentimentResult = await extractJournalSentimentLLM(text, { model: candidateModel });
+      return {
+        model: candidateModel,
+        durationMs: Date.now() - startedAt,
+        sentiment: sentimentResult.sentiment,
+        promptText: sentimentResult.promptText,
+        parsedOutputJson: sentimentResult.rawOutputText || sentimentResult.parsedOutputJson,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Sentiment extraction failed.";
+      const rawOutputUnknown = (error as { rawOutputText?: unknown })?.rawOutputText;
+      let rawOutput = "";
+      if (typeof rawOutputUnknown === "string") {
+        rawOutput = rawOutputUnknown;
+      } else if (rawOutputUnknown !== undefined) {
+        try {
+          rawOutput = JSON.stringify(rawOutputUnknown, null, 2);
+        } catch {
+          rawOutput = String(rawOutputUnknown);
+        }
+      }
+      return {
+        model: candidateModel,
+        durationMs: Date.now() - startedAt,
+        error: message,
+        parsedOutputJson: rawOutput || `Sentiment extraction error: ${message}`,
+      };
+    }
+  };
+
+  const primaryAttempt = await runSentimentAttempt(model);
+  const compareResults: JournalSentimentModelComparison[] = [];
+
+  if (compareModels) {
+    const modelsToCompare = getJournalModelOptions().filter((entry) => entry !== model);
+    const attempts: Array<Awaited<ReturnType<typeof runSentimentAttempt>>> = [primaryAttempt];
+    for (const candidateModel of modelsToCompare) {
+      attempts.push(await runSentimentAttempt(candidateModel));
+    }
+    for (const attempt of attempts) {
+      compareResults.push({
+        model: attempt.model,
+        durationMs: attempt.durationMs,
+        error: attempt.error,
+        mood: attempt.sentiment?.mood,
+        intensity: attempt.sentiment?.intensity,
+        format: attempt.sentiment?.format,
+        tagCount: attempt.sentiment?.tags.length ?? 0,
+      });
+    }
+  }
+
+  if (primaryAttempt.sentiment) {
+    return {
+      compareResults,
+      promptText: primaryAttempt.promptText,
+      parsedOutputJson: primaryAttempt.parsedOutputJson,
+      sentimentPreview: {
+        ...primaryAttempt.sentiment,
+        model,
+        durationMs: primaryAttempt.durationMs,
+      },
+    };
+  }
+
+  return {
+    compareResults,
+    promptText: "",
+    parsedOutputJson: primaryAttempt.parsedOutputJson,
+    sentimentPreview: {
+      mood: "neutral",
+      intensity: "medium",
+      format: "informal",
+      tags: [],
+      model,
+      durationMs: primaryAttempt.durationMs,
+      error: primaryAttempt.error ?? "Sentiment extraction failed.",
+    },
+  };
 }
 
 // Dispatches update/delete based on kind
@@ -1214,6 +1920,8 @@ app.get("/journal-dev-benchmark/:sampleId", async (c) => {
       benchmarkSample: {
         id: sample.id,
         title: sample.title,
+        expectedEntryKinds: sample.expectedEntryKinds,
+        expectedSentiment: sample.expectedSentiment,
         prevId: prevSample?.id,
         nextId: nextSample?.id,
       },
@@ -1285,11 +1993,22 @@ app.post("/api/journal/preview", async (c) => {
   const text = String(body.text ?? "").trim();
   const uiMode = resolveJournalUiMode(String(body.journalUiMode ?? ""));
   const requestedJournalId = String(body.journalId ?? "").trim() || undefined;
-  const requestedModel = String(body.journalModel ?? "").trim();
+  const benchmarkSampleId = String(body.benchmarkSampleId ?? "").trim();
+  const benchmarkSample = benchmarkSampleId
+    ? getJournalDevBenchmarkSamples().find((sample) => sample.id === benchmarkSampleId)
+    : undefined;
+  const requestedEntriesModel = String(body.journalModelEntries ?? body.journalModel ?? "").trim();
+  const requestedSentimentModel = String(body.journalModelSentiment ?? body.journalModel ?? "").trim();
+  const parseTarget = String(body.parseTarget ?? "entries").trim().toLowerCase() === "sentiment" ? "sentiment" : "entries";
   const compareModelsRequested = ["1", "on", "true", "yes"].includes(String(body.compareModels ?? "").trim().toLowerCase());
+  const compareSentimentModelsRequested = ["1", "on", "true", "yes"].includes(String(body.compareSentimentModels ?? "").trim().toLowerCase());
   const compareModels = uiMode === "dev" ? compareModelsRequested : false;
-  const selectedModel = uiMode === "dev"
-    ? resolveJournalSelectedModel(requestedModel)
+  const compareSentimentModels = uiMode === "dev" ? compareSentimentModelsRequested : false;
+  const selectedEntriesModel = uiMode === "dev"
+    ? resolveJournalSelectedModel(requestedEntriesModel)
+    : resolveJournalSelectedModel(env.JOURNAL_LLM_MODEL);
+  const selectedSentimentModel = uiMode === "dev"
+    ? resolveJournalSelectedModel(requestedSentimentModel || requestedEntriesModel)
     : resolveJournalSelectedModel(env.JOURNAL_LLM_MODEL);
   if (!text) {
     return c.html(`<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">Enter journal text before previewing.</section>`);
@@ -1302,24 +2021,75 @@ app.post("/api/journal/preview", async (c) => {
     journalId = journal.id;
   }
 
-  const { items, result, compareResults, parsedOutputJson, promptText } = await computeJournalPreviewCandidates({
-    compareModels,
-    journalLogId: journalId,
-    selectedModel,
-    text,
-    userId: canSave ? viewer.authUser!.id : "journal-dev-benchmark-preview",
-  });
-
-  if (items.length === 0) {
+  if (parseTarget === "sentiment") {
+    const sentiment = await computeJournalSentimentPreview({
+      compareModels: compareSentimentModels,
+      model: selectedSentimentModel,
+      text,
+    });
+    if (uiMode === "dev") {
+      return c.html(renderSentimentParseOutput({
+        compareResults: sentiment.compareResults,
+        expectedSentiment: benchmarkSample?.expectedSentiment,
+        selectedModel: selectedSentimentModel,
+        parsedPromptText: sentiment.promptText,
+        parsedOutputJson: sentiment.parsedOutputJson,
+        sentimentPreview: sentiment.sentimentPreview,
+      }));
+    }
     return c.html(renderJournalPreview({
       journalId,
       candidates: [],
       compareModels,
       errors: [],
-      selectedModel,
+      selectedEntriesModel,
+      selectedSentimentModel,
+      entriesParsedOnce: false,
+      sentimentParsedOnce: true,
+      sentimentParsedPromptText: sentiment.promptText,
+      sentimentParsedOutputJson: sentiment.parsedOutputJson,
+      sentimentPreview: sentiment.sentimentPreview,
+      showNoCandidatesMessage: false,
+      uiMode,
+      allowSave: canSave,
+    }));
+  }
+
+  const { items, result, compareResults, parsedOutputJson, promptText } = await computeJournalPreviewCandidates({
+    compareModels,
+    journalLogId: journalId,
+    selectedModel: selectedEntriesModel,
+    text,
+    userId: canSave ? viewer.authUser!.id : "journal-dev-benchmark-preview",
+  });
+
+  if (items.length === 0) {
+    if (uiMode === "dev") {
+      return c.html(renderEntriesParseOutput({
+        journalId,
+        candidates: [],
+        compareResults,
+        errors: [],
+        expectedEntryKinds: benchmarkSample?.expectedEntryKinds,
+        selectedModel: selectedEntriesModel,
+        parsedPromptText: promptText,
+        parsedOutputJson,
+        uiMode,
+        allowSave: canSave,
+      }));
+    }
+    return c.html(renderJournalPreview({
+      journalId,
+      candidates: [],
+      compareModels,
+      errors: [],
+      selectedEntriesModel,
+      selectedSentimentModel,
       compareResults,
-      promptText,
-      parsedOutputJson,
+      entriesParsedPromptText: promptText,
+      entriesParsedOutputJson: parsedOutputJson,
+      entriesParsedOnce: true,
+      sentimentParsedOnce: false,
       uiMode,
       allowSave: canSave,
     }));
@@ -1351,15 +2121,33 @@ app.post("/api/journal/preview", async (c) => {
     }
   }
 
+  if (uiMode === "dev") {
+    return c.html(renderEntriesParseOutput({
+      journalId,
+      candidates: result.candidates,
+      compareResults,
+      errors: result.errors,
+      expectedEntryKinds: benchmarkSample?.expectedEntryKinds,
+      selectedModel: selectedEntriesModel,
+      parsedPromptText: promptText,
+      parsedOutputJson,
+      uiMode,
+      allowSave: canSave,
+    }));
+  }
+
   return c.html(renderJournalPreview({
     journalId,
     candidates: result.candidates,
     compareModels,
     errors: result.errors,
-    selectedModel,
+    selectedEntriesModel,
+    selectedSentimentModel,
     compareResults,
-    promptText,
-    parsedOutputJson,
+    entriesParsedPromptText: promptText,
+    entriesParsedOutputJson: parsedOutputJson,
+    entriesParsedOnce: true,
+    sentimentParsedOnce: false,
     uiMode,
     allowSave: canSave,
   }));

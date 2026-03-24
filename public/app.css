@@ -65,6 +65,19 @@
   opacity: 0.8;
 }
 
+.htmx-request button[type="submit"].is-submitting[data-parse-button="true"],
+button.is-submitting[data-parse-button="true"],
+button.is-submitting[data-parse-button="true"]:disabled {
+  background-color: rgb(245 158 11) !important;
+  color: rgb(2 6 23) !important;
+  border-color: rgb(252 211 77 / 0.65) !important;
+  opacity: 1 !important;
+}
+
+button.is-submitting[data-parse-button="true"]:hover {
+  background-color: rgb(251 191 36) !important;
+}
+
 button.is-submitting {
   display: inline-flex;
   align-items: center;

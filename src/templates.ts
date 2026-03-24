@@ -1,7 +1,8 @@
 import type { Viewer, HistoryItem, AppProfile } from "./lib/app.js";
 import { escapeHtml, formatDateTime } from "./lib/html.js";
 
-const ASSET_VERSION = "20260318-six-alpha-032";
+const ASSET_VERSION = process.env.ASSET_VERSION
+  ?? new Date().toISOString().replace(/[-:.TZ]/g, "");
 
 function avatarInitials(viewer: Viewer) {
   const first = viewer.profile?.firstName?.trim() || "";
@@ -66,6 +67,123 @@ function tagClassForKind(kind: string) {
   }
 }
 
+type SentimentChipData = {
+  mood: "positive" | "neutral" | "negative";
+  intensity: "high" | "medium" | "low";
+  format: "formal" | "informal";
+  tags: string[];
+};
+
+function normalizeMood(value: unknown): SentimentChipData["mood"] | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (raw === "positive" || raw === "neutral" || raw === "negative") {
+    return raw;
+  }
+  return null;
+}
+
+function normalizeIntensity(value: unknown): SentimentChipData["intensity"] | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (raw === "high" || raw === "medium" || raw === "low") {
+    return raw;
+  }
+  return null;
+}
+
+function normalizeFormat(value: unknown): SentimentChipData["format"] | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (raw === "formal" || raw === "informal") {
+    return raw;
+  }
+  return null;
+}
+
+function normalizeTags(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((tag) => (typeof tag === "string" ? tag.trim().toLowerCase() : ""))
+      .filter((tag) => Boolean(tag));
+  }
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((tag) => tag.trim().toLowerCase())
+      .filter((tag) => Boolean(tag));
+  }
+  return [];
+}
+
+function sentimentFromItem(item: HistoryItem): SentimentChipData | null {
+  const mood = normalizeMood(item.sentimentMood ?? item.mood);
+  const intensity = normalizeIntensity(item.sentimentIntensity ?? item.intensity);
+  const format = normalizeFormat(item.sentimentFormat ?? item.format);
+  const tags = normalizeTags(item.sentimentTags ?? item.tags);
+
+  if (!mood && !intensity && !format && tags.length === 0) {
+    return null;
+  }
+
+  return {
+    mood: mood ?? "neutral",
+    intensity: intensity ?? "medium",
+    format: format ?? "informal",
+    tags,
+  };
+}
+
+function moodChipClass(mood: SentimentChipData["mood"]) {
+  if (mood === "positive") {
+    return "border-emerald-300/40 bg-emerald-500/15 text-emerald-100";
+  }
+  if (mood === "negative") {
+    return "border-rose-300/40 bg-rose-500/15 text-rose-100";
+  }
+  return "border-slate-300/35 bg-slate-500/15 text-slate-100";
+}
+
+function intensityChipClass(intensity: SentimentChipData["intensity"]) {
+  if (intensity === "high") {
+    return "border-amber-300/45 bg-amber-500/15 text-amber-100";
+  }
+  if (intensity === "low") {
+    return "border-sky-300/45 bg-sky-500/15 text-sky-100";
+  }
+  return "border-indigo-300/45 bg-indigo-500/15 text-indigo-100";
+}
+
+function formatChipClass(format: SentimentChipData["format"]) {
+  if (format === "formal") {
+    return "border-violet-300/45 bg-violet-500/15 text-violet-100";
+  }
+  return "border-cyan-300/45 bg-cyan-500/15 text-cyan-100";
+}
+
+function renderSentimentInline(item: HistoryItem) {
+  const sentiment = sentimentFromItem(item);
+  if (!sentiment) {
+    return "";
+  }
+
+  const visibleTags = sentiment.tags.slice(0, 3);
+  const hiddenTagCount = Math.max(0, sentiment.tags.length - visibleTags.length);
+  const tagsHtml = visibleTags
+    .map((tag) => `<span class="rounded-full border border-fuchsia-300/35 bg-fuchsia-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-fuchsia-100">${escapeHtml(tag)}</span>`)
+    .join("");
+  const moreHtml = hiddenTagCount > 0
+    ? `<span class="rounded-full border border-slate-400/35 bg-slate-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-200">+${hiddenTagCount} more</span>`
+    : "";
+
+  return `
+    <div class="mt-2 flex flex-wrap items-center gap-1.5">
+      <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${moodChipClass(sentiment.mood)}">Mood: ${escapeHtml(sentiment.mood)}</span>
+      <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${intensityChipClass(sentiment.intensity)}">Intensity: ${escapeHtml(sentiment.intensity)}</span>
+      <span class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${formatChipClass(sentiment.format)}">Format: ${escapeHtml(sentiment.format)}</span>
+      ${tagsHtml}
+      ${moreHtml}
+    </div>
+  `;
+}
+
 function summaryForItem(item: HistoryItem) {
   const kind = item.kind;
   if (kind === "goal") {
@@ -126,6 +244,7 @@ export function historySection(items: HistoryItem[], total: number, filter: stri
                           <span class="font-mono text-[11px] text-slate-400">${escapeHtml(formatDateTime(item.sortAt))}</span>
                         </div>
                         <div class="text-sm text-slate-100">${escapeHtml(summaryForItem(item))}</div>
+                        ${renderSentimentInline(item)}
                       </a>
                     </li>
                   `,
@@ -187,6 +306,7 @@ function detailFieldsHtml(item: HistoryItem) {
 
 export function entryDetail(item: HistoryItem) {
   const label = item.kind.charAt(0).toUpperCase() + item.kind.slice(1);
+  const sentimentHtml = renderSentimentInline(item);
   return `
     <section id="entry-detail" class="glass mx-auto w-full max-w-[24.5rem] rounded-2xl border border-cyan-300/20 p-4 shadow-neon sm:max-w-3xl sm:p-5">
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -201,6 +321,7 @@ export function entryDetail(item: HistoryItem) {
           <a href="/" class="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10">Close</a>
         </div>
       </div>
+      ${sentimentHtml ? `<div class="mb-4">${sentimentHtml}</div>` : ""}
       <div class="grid gap-3">${detailFieldsHtml(item)}</div>
     </section>
   `;

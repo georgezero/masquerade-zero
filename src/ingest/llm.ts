@@ -457,6 +457,21 @@ export type JournalLlmExtractionResult = {
   rawOutputText: string;
 };
 
+export type JournalLlmSentimentResult = {
+  confidence?: number;
+  format: "formal" | "informal";
+  intensity: "high" | "medium" | "low";
+  mood: "positive" | "neutral" | "negative";
+  tags: string[];
+};
+
+export type JournalLlmSentimentExtractionResult = {
+  parsedOutputJson: string;
+  promptText: string;
+  rawOutputText: string;
+  sentiment: JournalLlmSentimentResult;
+};
+
 export class JournalLlmExtractionError extends Error {
   rawOutputText?: string;
 
@@ -465,6 +480,52 @@ export class JournalLlmExtractionError extends Error {
     this.name = "JournalLlmExtractionError";
     this.rawOutputText = rawOutputText;
   }
+}
+
+const SENTIMENT_TAGS = new Set([
+  "tactical",
+  "physical",
+  "mental",
+  "coach",
+  "match-play",
+  "recovery",
+  "nutrition",
+  "social",
+  "breakthrough",
+  "struggle",
+  "fun",
+]);
+
+const llmSentimentSchema = z.object({
+  confidence: z.number().min(0).max(1).optional(),
+  format: z.enum(["formal", "informal"]),
+  intensity: z.enum(["high", "medium", "low"]),
+  mood: z.enum(["positive", "neutral", "negative"]),
+  tags: z.array(z.string()).default([]),
+}).strict();
+
+function parseJournalSentimentJson(content: string): JournalLlmSentimentResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(extractJsonLikeContent(content));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid JSON.";
+    throw new JournalLlmExtractionError(`Could not parse LLM sentiment JSON response: ${message}`, content);
+  }
+
+  const record = Array.isArray(parsed) ? parsed[0] : parsed;
+  const normalized = llmSentimentSchema.parse(record);
+  const tags = normalized.tags
+    .map((tag) => tag.trim().toLowerCase())
+    .filter((tag) => SENTIMENT_TAGS.has(tag));
+
+  return {
+    mood: normalized.mood,
+    intensity: normalized.intensity,
+    format: normalized.format,
+    tags,
+    confidence: normalized.confidence,
+  };
 }
 
 const SYSTEM_PROMPT_SINGLE_PASS = [
@@ -841,4 +902,58 @@ export async function extractJournalCandidatesLLM(
   }
   const items = applyJournalDateDefaults(parsed, today);
   return { items, parsedOutputJson: JSON.stringify(items, null, 2), promptText: promptDebug, rawOutputText: content };
+}
+
+export async function extractJournalSentimentLLM(
+  text: string,
+  options?: {
+    model?: string;
+  },
+): Promise<JournalLlmSentimentExtractionResult> {
+  if (!journalLlmEnabled) {
+    throw new Error("Journal LLM is disabled or not configured.");
+  }
+
+  if (text.length > env.JOURNAL_LLM_MAX_INPUT_CHARS) {
+    throw new Error(`Journal text exceeds max length (${env.JOURNAL_LLM_MAX_INPUT_CHARS} chars).`);
+  }
+
+  const client = getOpenAiClient();
+  const model = options?.model?.trim() || env.JOURNAL_LLM_MODEL?.trim();
+  if (!model) {
+    throw new Error("No JOURNAL_LLM_MODEL configured.");
+  }
+
+  const userPrompt = text;
+  const completion = await runCompletion({
+    client,
+    model,
+    systemPrompt: SYSTEM_PROMPT_SENTIMENT,
+    userPrompt,
+  });
+  const content = contentFromCompletion(completion);
+  let sentiment: JournalLlmSentimentResult;
+  try {
+    sentiment = parseJournalSentimentJson(content);
+  } catch (error) {
+    if (error instanceof JournalLlmExtractionError) {
+      throw error;
+    }
+    const message = error instanceof Error ? error.message : "Could not parse sentiment output.";
+    throw new JournalLlmExtractionError(message, content);
+  }
+
+  const promptDebug = renderPromptDebug({
+    model,
+    systemPrompt: SYSTEM_PROMPT_SENTIMENT,
+    userPrompt,
+    phase: "sentiment",
+  });
+
+  return {
+    sentiment,
+    parsedOutputJson: JSON.stringify(sentiment, null, 2),
+    promptText: promptDebug,
+    rawOutputText: content,
+  };
 }

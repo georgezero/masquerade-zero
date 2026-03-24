@@ -2,6 +2,8 @@
 
 const STORAGE_KEY = "tennis-zero-six-alpha-v1";
 const JOURNAL_DEV_MODEL_STORAGE_KEY = "tennis-zero-six-alpha-journal-dev-model-v1";
+const JOURNAL_DEV_ENTRIES_MODEL_STORAGE_KEY = "tennis-zero-six-alpha-journal-dev-entries-model-v1";
+const JOURNAL_DEV_SENTIMENT_MODEL_STORAGE_KEY = "tennis-zero-six-alpha-journal-dev-sentiment-model-v1";
 const HISTORY_PAGE_SIZE = 15;
 const VALID_KINDS = ["goal", "practice", "match", "diet", "exercise"];
 
@@ -69,14 +71,38 @@ function fmt(v) {
 // ── HTMX Event Handlers (authenticated mode) ────────────────────
 
 function initHtmxHandlers() {
+  document.body.addEventListener("click", (event) => {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const submitButton = target?.closest?.('button[type="submit"]');
+    if (!(submitButton instanceof HTMLButtonElement)) return;
+    const form = submitButton.closest("form");
+    if (!(form instanceof HTMLFormElement)) return;
+    form._lastSubmitButton = submitButton;
+  });
+
   // Form locking: disable controls while HTMX request is in flight
   document.body.addEventListener("htmx:beforeRequest", (event) => {
     const form = event.target.closest?.("form");
     if (!form) return;
-    const btn = form.querySelector('button[type="submit"]');
+    const btn =
+      (event.detail?.requestConfig?.elt instanceof HTMLButtonElement && event.detail.requestConfig.elt.type === "submit"
+        ? event.detail.requestConfig.elt
+        : null) ||
+      form._lastSubmitButton ||
+      form.querySelector('button[type="submit"]');
     if (btn) {
       btn._originalText = btn.textContent;
+      btn._originalClassName = btn.className;
+      btn._originalStyle = btn.getAttribute("style") || "";
       btn.textContent = btn.dataset.submittingText || "Saving...";
+      if (btn.dataset.parseButton === "true") {
+        btn.classList.remove("bg-cyan-500", "hover:bg-cyan-400");
+        btn.classList.add("bg-amber-500", "hover:bg-amber-400");
+        btn.style.backgroundColor = "rgb(245 158 11)";
+        btn.style.borderColor = "rgb(252 211 77 / 0.65)";
+        btn.style.color = "rgb(2 6 23)";
+        btn.style.opacity = "1";
+      }
       btn.classList.add("is-submitting");
       btn.setAttribute("aria-busy", "true");
     }
@@ -85,15 +111,28 @@ function initHtmxHandlers() {
   document.body.addEventListener("htmx:afterRequest", (event) => {
     const form = event.target.closest?.("form");
     if (!form) return;
-    const btn = form.querySelector('button[type="submit"]');
+    const btn = form._lastSubmitButton || form.querySelector('button[type="submit"]');
     if (btn && btn._originalText) {
       btn.textContent = btn._originalText;
       delete btn._originalText;
+    }
+    if (btn && btn._originalClassName) {
+      btn.className = btn._originalClassName;
+      delete btn._originalClassName;
+    }
+    if (btn && typeof btn._originalStyle === "string") {
+      if (btn._originalStyle) {
+        btn.setAttribute("style", btn._originalStyle);
+      } else {
+        btn.removeAttribute("style");
+      }
+      delete btn._originalStyle;
     }
     if (btn) {
       btn.classList.remove("is-submitting");
       btn.removeAttribute("aria-busy");
     }
+    delete form._lastSubmitButton;
   });
 
   // After HTMX swap, re-bind avatar preview if profile form was swapped in
@@ -137,21 +176,42 @@ function initCopyButtons() {
 function bindJournalDevModelPreference() {
   if (route !== "journal-dev") return;
 
-  const modelSelect = document.getElementById("journal-model-select");
   const uiModeInput = document.getElementById("journal-ui-mode-input");
-  if (!(modelSelect instanceof HTMLSelectElement) || !(uiModeInput instanceof HTMLInputElement)) return;
+  if (!(uiModeInput instanceof HTMLInputElement)) return;
   if ((uiModeInput.value || "").trim().toLowerCase() !== "dev") return;
 
-  const storedModel = localStorage.getItem(JOURNAL_DEV_MODEL_STORAGE_KEY);
-  if (storedModel && Array.from(modelSelect.options).some((option) => option.value === storedModel)) {
-    modelSelect.value = storedModel;
+  const entriesSelect = document.getElementById("journal-model-select-entries");
+  if (entriesSelect instanceof HTMLSelectElement) {
+    const storedEntriesModel =
+      localStorage.getItem(JOURNAL_DEV_ENTRIES_MODEL_STORAGE_KEY) ||
+      localStorage.getItem(JOURNAL_DEV_MODEL_STORAGE_KEY);
+    if (storedEntriesModel && Array.from(entriesSelect.options).some((option) => option.value === storedEntriesModel)) {
+      entriesSelect.value = storedEntriesModel;
+    }
+    if (entriesSelect.dataset.modelPrefBound !== "1") {
+      entriesSelect.dataset.modelPrefBound = "1";
+      entriesSelect.addEventListener("change", () => {
+        localStorage.setItem(JOURNAL_DEV_ENTRIES_MODEL_STORAGE_KEY, entriesSelect.value);
+      });
+    }
   }
 
-  if (modelSelect.dataset.modelPrefBound === "1") return;
-  modelSelect.dataset.modelPrefBound = "1";
-  modelSelect.addEventListener("change", () => {
-    localStorage.setItem(JOURNAL_DEV_MODEL_STORAGE_KEY, modelSelect.value);
-  });
+  const sentimentSelect = document.getElementById("journal-model-select-sentiment");
+  if (sentimentSelect instanceof HTMLSelectElement) {
+    const storedSentimentModel =
+      localStorage.getItem(JOURNAL_DEV_SENTIMENT_MODEL_STORAGE_KEY) ||
+      localStorage.getItem(JOURNAL_DEV_ENTRIES_MODEL_STORAGE_KEY) ||
+      localStorage.getItem(JOURNAL_DEV_MODEL_STORAGE_KEY);
+    if (storedSentimentModel && Array.from(sentimentSelect.options).some((option) => option.value === storedSentimentModel)) {
+      sentimentSelect.value = storedSentimentModel;
+    }
+    if (sentimentSelect.dataset.modelPrefBound !== "1") {
+      sentimentSelect.dataset.modelPrefBound = "1";
+      sentimentSelect.addEventListener("change", () => {
+        localStorage.setItem(JOURNAL_DEV_SENTIMENT_MODEL_STORAGE_KEY, sentimentSelect.value);
+      });
+    }
+  }
 }
 
 // ── Avatar Preview (for profile form) ────────────────────────────
