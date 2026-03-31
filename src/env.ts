@@ -11,6 +11,14 @@ const ingestApiKeyRecordSchema = z
   })
   .strict();
 
+const journalLlmServerRecordSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    baseUrl: z.string().url(),
+  })
+  .strict();
+
 const envSchema = z.object({
   DATABASE_URL: z.string().optional(),
   NEON_AUTH_BASE_URL: z.string().url().optional(),
@@ -28,6 +36,7 @@ const envSchema = z.object({
   JOURNAL_LLM_ENABLED: z.coerce.boolean().default(false),
   JOURNAL_LLM_MAX_INPUT_CHARS: z.coerce.number().int().positive().default(12000),
   JOURNAL_LLM_MODEL: z.string().min(1).optional(),
+  JOURNAL_LLM_SERVERS_JSON: z.string().optional(),
   JOURNAL_LLM_SECONDARY_MODEL: z.string().min(1).optional(),
   JOURNAL_LLM_TERTIARY_MODEL: z.string().min(1).optional(),
   JOURNAL_LLM_TEST_PREVIEW_KEY: z.string().min(1).optional(),
@@ -45,6 +54,7 @@ export const env = {
 };
 
 export type IngestApiKeyRecord = z.infer<typeof ingestApiKeyRecordSchema>;
+export type JournalLlmServerRecord = z.infer<typeof journalLlmServerRecordSchema>;
 
 function parseIngestApiKeys(json: string | undefined): IngestApiKeyRecord[] {
   if (!json?.trim()) {
@@ -67,6 +77,38 @@ function parseIngestApiKeys(json: string | undefined): IngestApiKeyRecord[] {
   return validated.data;
 }
 
+function parseJournalLlmServers(json: string | undefined): JournalLlmServerRecord[] {
+  if (!json?.trim()) {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error("JOURNAL_LLM_SERVERS_JSON must be valid JSON.");
+  }
+
+  const validated = z.array(journalLlmServerRecordSchema).min(1).safeParse(parsed);
+  if (!validated.success) {
+    const message = validated.error.issues[0]?.message ?? "Invalid JOURNAL_LLM_SERVERS_JSON.";
+    throw new Error(`JOURNAL_LLM_SERVERS_JSON invalid: ${message}`);
+  }
+
+  const deduped = new Map<string, JournalLlmServerRecord>();
+  for (const server of validated.data) {
+    const id = server.id.trim();
+    const label = server.label.trim();
+    const baseUrl = server.baseUrl.trim();
+    if (!id || !label || !baseUrl) {
+      continue;
+    }
+    deduped.set(id.toLowerCase(), { id: id.toLowerCase(), label, baseUrl });
+  }
+
+  return Array.from(deduped.values());
+}
+
 export const ingestApiKeys: IngestApiKeyRecord[] = (() => {
   const parsed = parseIngestApiKeys(env.INGEST_API_KEYS_JSON);
   if (parsed.length > 0) {
@@ -82,6 +124,17 @@ export const ingestApiKeys: IngestApiKeyRecord[] = (() => {
     ];
   }
   return [];
+})();
+
+const defaultJournalLlmServers: JournalLlmServerRecord[] = [
+  { id: "papaya", label: "papaya (m4pro-mbp)", baseUrl: "http://192.168.86.28:1234/v1" },
+  { id: "goro", label: "goro (m3max-mbp)", baseUrl: "http://192.168.86.21:1234/v1" },
+  { id: "mango", label: "mango (m3max-mbp)", baseUrl: "https://mango.fff.ad/v1" },
+];
+
+export const journalLlmServers: JournalLlmServerRecord[] = (() => {
+  const parsed = parseJournalLlmServers(env.JOURNAL_LLM_SERVERS_JSON);
+  return parsed.length > 0 ? parsed : defaultJournalLlmServers;
 })();
 
 export const authConfigured = Boolean(env.NEON_AUTH_BASE_URL && env.NEON_AUTH_COOKIE_SECRET);

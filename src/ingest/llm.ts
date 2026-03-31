@@ -48,8 +48,17 @@ function todayIsoDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function getOpenAiClient(): OpenAiChatClient {
-  if (openAiClient && openAiClientBaseUrl === journalLlmBaseUrl) {
+function resolveBaseUrl(baseUrlOverride?: string): string {
+  const resolved = baseUrlOverride?.trim() || journalLlmBaseUrl?.trim() || "";
+  if (!resolved) {
+    throw new Error("No JOURNAL_LLM_BASE_URL configured.");
+  }
+  return resolved;
+}
+
+function getOpenAiClient(baseUrlOverride?: string): OpenAiChatClient {
+  const resolvedBaseUrl = resolveBaseUrl(baseUrlOverride);
+  if (openAiClient && openAiClientBaseUrl === resolvedBaseUrl) {
     return openAiClient;
   }
 
@@ -58,10 +67,10 @@ function getOpenAiClient(): OpenAiChatClient {
 
   openAiClient = new OpenAiClass({
     apiKey: env.JOURNAL_LLM_API_KEY,
-    baseURL: journalLlmBaseUrl,
+    baseURL: resolvedBaseUrl,
     timeout: env.JOURNAL_LLM_TIMEOUT_MS,
   });
-  openAiClientBaseUrl = journalLlmBaseUrl ?? null;
+  openAiClientBaseUrl = resolvedBaseUrl;
 
   return openAiClient;
 }
@@ -778,6 +787,7 @@ function parsePassOneCandidates(content: string): PassOneCandidate[] {
 export async function extractJournalCandidatesLLM(
   text: string,
   options?: {
+    baseUrl?: string;
     model?: string;
   },
 ): Promise<JournalLlmExtractionResult> {
@@ -789,7 +799,7 @@ export async function extractJournalCandidatesLLM(
     throw new Error(`Journal text exceeds max length (${env.JOURNAL_LLM_MAX_INPUT_CHARS} chars).`);
   }
 
-  const client = getOpenAiClient();
+  const client = getOpenAiClient(options?.baseUrl);
   const model = options?.model?.trim() || env.JOURNAL_LLM_MODEL?.trim();
   if (!model) {
     throw new Error("No JOURNAL_LLM_MODEL configured.");
@@ -907,6 +917,7 @@ export async function extractJournalCandidatesLLM(
 export async function extractJournalSentimentLLM(
   text: string,
   options?: {
+    baseUrl?: string;
     model?: string;
   },
 ): Promise<JournalLlmSentimentExtractionResult> {
@@ -918,7 +929,7 @@ export async function extractJournalSentimentLLM(
     throw new Error(`Journal text exceeds max length (${env.JOURNAL_LLM_MAX_INPUT_CHARS} chars).`);
   }
 
-  const client = getOpenAiClient();
+  const client = getOpenAiClient(options?.baseUrl);
   const model = options?.model?.trim() || env.JOURNAL_LLM_MODEL?.trim();
   if (!model) {
     throw new Error("No JOURNAL_LLM_MODEL configured.");

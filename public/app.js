@@ -4,6 +4,8 @@ const STORAGE_KEY = "tennis-zero-six-alpha-v1";
 const JOURNAL_DEV_MODEL_STORAGE_KEY = "tennis-zero-six-alpha-journal-dev-model-v1";
 const JOURNAL_DEV_ENTRIES_MODEL_STORAGE_KEY = "tennis-zero-six-alpha-journal-dev-entries-model-v1";
 const JOURNAL_DEV_SENTIMENT_MODEL_STORAGE_KEY = "tennis-zero-six-alpha-journal-dev-sentiment-model-v1";
+const JOURNAL_DEV_ENTRIES_SERVER_STORAGE_KEY = "tennis-zero-six-alpha-journal-dev-entries-server-v1";
+const JOURNAL_DEV_SENTIMENT_SERVER_STORAGE_KEY = "tennis-zero-six-alpha-journal-dev-sentiment-server-v1";
 const HISTORY_PAGE_SIZE = 15;
 const VALID_KINDS = ["goal", "practice", "match", "diet", "exercise"];
 
@@ -71,12 +73,44 @@ function fmt(v) {
 // ── HTMX Event Handlers (authenticated mode) ────────────────────
 
 function initHtmxHandlers() {
+  function restoreSubmitButtonState(btn) {
+    if (!(btn instanceof HTMLButtonElement)) return;
+    if (btn._originalText) {
+      btn.textContent = btn._originalText;
+      delete btn._originalText;
+    }
+    if (btn._originalClassName) {
+      btn.className = btn._originalClassName;
+      delete btn._originalClassName;
+    }
+    if (typeof btn._originalStyle === "string") {
+      if (btn._originalStyle) {
+        btn.setAttribute("style", btn._originalStyle);
+      } else {
+        btn.removeAttribute("style");
+      }
+      delete btn._originalStyle;
+    }
+    btn.classList.remove("is-submitting");
+    btn.removeAttribute("aria-busy");
+  }
+
+  function resolveSubmitButton(form, event) {
+    const requestElt = event?.detail?.requestConfig?.elt;
+    if (requestElt instanceof HTMLButtonElement && requestElt.type === "submit") {
+      return requestElt;
+    }
+    return form._lastSubmitButton || form.querySelector('button[type="submit"]');
+  }
+
   document.body.addEventListener("click", (event) => {
     const target = event.target instanceof HTMLElement ? event.target : null;
     const submitButton = target?.closest?.('button[type="submit"]');
     if (!(submitButton instanceof HTMLButtonElement)) return;
     const form = submitButton.closest("form");
     if (!(form instanceof HTMLFormElement)) return;
+    if (form.dataset.requestInFlight === "1") return;
+    if (submitButton.disabled) return;
     form._lastSubmitButton = submitButton;
   });
 
@@ -84,16 +118,26 @@ function initHtmxHandlers() {
   document.body.addEventListener("htmx:beforeRequest", (event) => {
     const form = event.target.closest?.("form");
     if (!form) return;
-    const btn =
-      (event.detail?.requestConfig?.elt instanceof HTMLButtonElement && event.detail.requestConfig.elt.type === "submit"
-        ? event.detail.requestConfig.elt
-        : null) ||
-      form._lastSubmitButton ||
-      form.querySelector('button[type="submit"]');
+    form.dataset.requestInFlight = "1";
+    const btn = resolveSubmitButton(form, event);
+    const xhr = event?.detail?.xhr;
+    if (xhr && btn) {
+      xhr._submitButton = btn;
+    }
+    const submitButtons = Array.from(form.querySelectorAll('button[type="submit"]'));
+    for (const candidate of submitButtons) {
+      if (!(candidate instanceof HTMLButtonElement)) continue;
+      candidate._wasDisabled = candidate.disabled ? "1" : "0";
+      if (candidate !== btn) {
+        candidate.disabled = true;
+        candidate.classList.add("opacity-60", "cursor-not-allowed");
+      }
+    }
     if (btn) {
       btn._originalText = btn.textContent;
       btn._originalClassName = btn.className;
       btn._originalStyle = btn.getAttribute("style") || "";
+      btn.dataset.submittingActive = "1";
       btn.textContent = btn.dataset.submittingText || "Saving...";
       if (btn.dataset.parseButton === "true") {
         btn.classList.remove("bg-cyan-500", "hover:bg-cyan-400");
@@ -111,28 +155,33 @@ function initHtmxHandlers() {
   document.body.addEventListener("htmx:afterRequest", (event) => {
     const form = event.target.closest?.("form");
     if (!form) return;
-    const btn = form._lastSubmitButton || form.querySelector('button[type="submit"]');
-    if (btn && btn._originalText) {
-      btn.textContent = btn._originalText;
-      delete btn._originalText;
-    }
-    if (btn && btn._originalClassName) {
-      btn.className = btn._originalClassName;
-      delete btn._originalClassName;
-    }
-    if (btn && typeof btn._originalStyle === "string") {
-      if (btn._originalStyle) {
-        btn.setAttribute("style", btn._originalStyle);
-      } else {
-        btn.removeAttribute("style");
+    delete form.dataset.requestInFlight;
+    const xhr = event?.detail?.xhr;
+    const btn = (xhr && xhr._submitButton instanceof HTMLButtonElement)
+      ? xhr._submitButton
+      : resolveSubmitButton(form, event);
+    const submitButtons = Array.from(form.querySelectorAll('button[type="submit"]'));
+    for (const candidate of submitButtons) {
+      if (!(candidate instanceof HTMLButtonElement)) continue;
+      const shouldBeDisabled = candidate._wasDisabled === "1";
+      candidate.disabled = shouldBeDisabled;
+      candidate.classList.remove("opacity-60", "cursor-not-allowed");
+      delete candidate._wasDisabled;
+      if (candidate.dataset.submittingActive === "1" || candidate.classList.contains("is-submitting")) {
+        restoreSubmitButtonState(candidate);
+        delete candidate.dataset.submittingActive;
       }
-      delete btn._originalStyle;
     }
-    if (btn) {
-      btn.classList.remove("is-submitting");
-      btn.removeAttribute("aria-busy");
+    if (btn && (btn._originalText || btn._originalClassName || typeof btn._originalStyle === "string")) {
+      restoreSubmitButtonState(btn);
+      delete btn.dataset.submittingActive;
     }
-    delete form._lastSubmitButton;
+    if (form._lastSubmitButton === btn) {
+      delete form._lastSubmitButton;
+    }
+    if (xhr && xhr._submitButton) {
+      delete xhr._submitButton;
+    }
   });
 
   // After HTMX swap, re-bind avatar preview if profile form was swapped in
@@ -196,6 +245,20 @@ function bindJournalDevModelPreference() {
     }
   }
 
+  const entriesServerSelect = document.getElementById("journal-server-select-entries");
+  if (entriesServerSelect instanceof HTMLSelectElement) {
+    const storedEntriesServer = localStorage.getItem(JOURNAL_DEV_ENTRIES_SERVER_STORAGE_KEY);
+    if (storedEntriesServer && Array.from(entriesServerSelect.options).some((option) => option.value === storedEntriesServer)) {
+      entriesServerSelect.value = storedEntriesServer;
+    }
+    if (entriesServerSelect.dataset.serverPrefBound !== "1") {
+      entriesServerSelect.dataset.serverPrefBound = "1";
+      entriesServerSelect.addEventListener("change", () => {
+        localStorage.setItem(JOURNAL_DEV_ENTRIES_SERVER_STORAGE_KEY, entriesServerSelect.value);
+      });
+    }
+  }
+
   const sentimentSelect = document.getElementById("journal-model-select-sentiment");
   if (sentimentSelect instanceof HTMLSelectElement) {
     const storedSentimentModel =
@@ -209,6 +272,22 @@ function bindJournalDevModelPreference() {
       sentimentSelect.dataset.modelPrefBound = "1";
       sentimentSelect.addEventListener("change", () => {
         localStorage.setItem(JOURNAL_DEV_SENTIMENT_MODEL_STORAGE_KEY, sentimentSelect.value);
+      });
+    }
+  }
+
+  const sentimentServerSelect = document.getElementById("journal-server-select-sentiment");
+  if (sentimentServerSelect instanceof HTMLSelectElement) {
+    const storedSentimentServer =
+      localStorage.getItem(JOURNAL_DEV_SENTIMENT_SERVER_STORAGE_KEY) ||
+      localStorage.getItem(JOURNAL_DEV_ENTRIES_SERVER_STORAGE_KEY);
+    if (storedSentimentServer && Array.from(sentimentServerSelect.options).some((option) => option.value === storedSentimentServer)) {
+      sentimentServerSelect.value = storedSentimentServer;
+    }
+    if (sentimentServerSelect.dataset.serverPrefBound !== "1") {
+      sentimentServerSelect.dataset.serverPrefBound = "1";
+      sentimentServerSelect.addEventListener("change", () => {
+        localStorage.setItem(JOURNAL_DEV_SENTIMENT_SERVER_STORAGE_KEY, sentimentServerSelect.value);
       });
     }
   }

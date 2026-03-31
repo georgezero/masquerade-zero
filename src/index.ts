@@ -40,7 +40,7 @@ import { extractJournalCandidatesLLM, extractJournalSentimentLLM, type JournalLl
 import { PostgresIngestRuntime } from "./ingest/runtime.js";
 import { ingestApiRequestSchema } from "./ingest/schemas.js";
 import type { IngestItem, IngestResult, IngestValidationError, StructuredIngestInput } from "./ingest/types.js";
-import { authConfigured, env, ingestApiConfigured, ingestApiKeys, journalLlmConfigured, journalLlmEnabled, journalLlmTestPreviewEnabled, type IngestApiKeyRecord } from "./env.js";
+import { authConfigured, env, ingestApiConfigured, ingestApiKeys, journalLlmBaseUrl, journalLlmConfigured, journalLlmEnabled, journalLlmServers, journalLlmTestPreviewEnabled, type IngestApiKeyRecord } from "./env.js";
 import { authJson, getAuthSession, proxyAuthRequest, setAuthCookies } from "./lib/auth.js";
 import { escapeHtml } from "./lib/html.js";
 import {
@@ -239,6 +239,46 @@ function getJournalModelOptions() {
   return Array.from(new Set(models));
 }
 
+type JournalServerOption = {
+  baseUrl: string;
+  id: string;
+  label: string;
+};
+
+function getJournalServerOptions() {
+  return journalLlmServers as JournalServerOption[];
+}
+
+function resolveJournalServerBaseUrl(serverId?: string): string {
+  const selectedId = serverId?.trim().toLowerCase();
+  const selected = getJournalServerOptions().find((option) => option.id === selectedId);
+  if (selected) {
+    return selected.baseUrl;
+  }
+  return resolveJournalSelectedServer().baseUrl;
+}
+
+function resolveJournalSelectedServer(requested?: string): JournalServerOption {
+  const selectedId = requested?.trim().toLowerCase();
+  const selected = getJournalServerOptions().find((option) => option.id === selectedId);
+  if (selected) {
+    return selected;
+  }
+
+  const envMatch = journalLlmBaseUrl
+    ? getJournalServerOptions().find((option) => option.baseUrl === journalLlmBaseUrl)
+    : null;
+  if (envMatch) {
+    return envMatch;
+  }
+
+  return getJournalServerOptions()[0]!;
+}
+
+function resolveJournalServerLabel(serverId?: string): string {
+  return resolveJournalSelectedServer(serverId).label;
+}
+
 function resolveJournalSelectedModel(requested?: string) {
   const available = getJournalModelOptions();
   const normalized = requested?.trim() ?? "";
@@ -372,7 +412,7 @@ function getJournalDevBenchmarkSamples(): JournalBenchmarkSample[] {
 }
 
 function composeJournalDevBenchmarkText(sample: JournalBenchmarkSample): string {
-  return `${sample.title}\n\n${sample.text}`.trim();
+  return `# ${sample.title}\n\n${sample.text}`.trim();
 }
 
 function moodChipClass(mood: "positive" | "neutral" | "negative") {
@@ -422,6 +462,16 @@ function formatPercent(value?: number) {
   return `${(value * 100).toFixed(0)}%`;
 }
 
+function formatEvalTimestamp(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
 function uniqueKinds(kinds: string[]) {
   const normalized = kinds
     .map((kind) => kind.trim().toLowerCase())
@@ -433,6 +483,9 @@ function renderEntriesEvalSection(
   expectedEntryKinds: JournalBenchmarkSample["expectedEntryKinds"],
   candidates: IngestItem[],
   model?: string,
+  serverId?: string,
+  evalTimestamp?: string,
+  latencyMs?: number,
 ) {
   if (!expectedEntryKinds || expectedEntryKinds.length === 0) {
     return "";
@@ -456,9 +509,14 @@ function renderEntriesEvalSection(
   const overallScore = exactMatch ? 1 : f1;
   const overallToneClass = "border-sky-300/45 bg-sky-500/20 text-sky-100 shadow-[0_0_16px_rgba(56,189,248,0.24)]";
   const selectedModel = model?.trim() || "n/a";
+  const selectedServer = resolveJournalServerLabel(serverId);
+  const timestampText = evalTimestamp?.trim() || formatEvalTimestamp(new Date());
+  const latencyText = Number.isFinite(latencyMs) ? `${Math.round(Number(latencyMs))}ms` : "n/a";
   const entriesEvalMarkdown = [
     "## Parse Journal Eval",
+    `Server: ${selectedServer}`,
     `Model: ${selectedModel}`,
+    `Run: ${timestampText} / ${latencyText}`,
     `Overall Score: ${formatPercent(overallScore)}`,
     `Exact Set Match: ${exactMatch ? "yes" : "no"}`,
     `Precision: ${formatPercent(precision)}`,
@@ -495,7 +553,9 @@ function renderEntriesEvalSection(
         <span>Copy Eval</span>
       </button>
     </div>
+    <p class="mt-1 text-xs text-slate-400">LLM Server: <span class="font-mono">${escapeHtml(selectedServer)}</span></p>
     <p class="mt-1 text-xs text-slate-400">Model: <span class="font-mono">${escapeHtml(selectedModel)}</span></p>
+    <p class="mt-1 text-xs text-slate-400"><span class="font-mono">${escapeHtml(timestampText)} / ${escapeHtml(latencyText)}</span></p>
     <pre id="journal-entries-eval-copy" class="hidden">${escapeHtml(entriesEvalMarkdown)}</pre>
     <div class="mt-2 flex flex-wrap items-center gap-2">
       <div class="inline-flex items-baseline gap-2 rounded-xl border px-3 py-2 ${overallToneClass}">
@@ -519,7 +579,12 @@ function renderEntriesEvalSection(
   </section>`;
 }
 
-function renderSentimentEvalSection(expectedSentiment: JournalBenchmarkSample["expectedSentiment"], sentimentPreview: JournalSentimentPreview) {
+function renderSentimentEvalSection(
+  expectedSentiment: JournalBenchmarkSample["expectedSentiment"],
+  sentimentPreview: JournalSentimentPreview,
+  serverId?: string,
+  evalTimestamp?: string,
+) {
   if (!expectedSentiment) {
     return "";
   }
@@ -552,9 +617,14 @@ function renderSentimentEvalSection(expectedSentiment: JournalBenchmarkSample["e
   const extraPredictedTags = predictedTags.filter((tag) => !expectedTagSet.has(tag));
   const overallToneClass = "border-sky-300/45 bg-sky-500/20 text-sky-100 shadow-[0_0_16px_rgba(56,189,248,0.24)]";
   const selectedModel = sentimentPreview.model?.trim() || "n/a";
+  const selectedServer = resolveJournalServerLabel(serverId);
+  const timestampText = evalTimestamp?.trim() || formatEvalTimestamp(new Date());
+  const latencyText = Number.isFinite(sentimentPreview.durationMs) ? `${Math.round(sentimentPreview.durationMs)}ms` : "n/a";
   const sentimentEvalMarkdown = [
     "## Parse Journal Sentiment Eval",
+    `Server: ${selectedServer}`,
     `Model: ${selectedModel}`,
+    `Run: ${timestampText} / ${latencyText}`,
     `Overall Score: ${formatPercent(overallScore)}`,
     `All-fields exact: ${exactAll == null ? "n/a" : exactAll ? "yes" : "no"}`,
     `Mood match: ${moodMatch == null ? "n/a" : moodMatch ? "yes" : "no"} (expected=${expectedSentiment.mood ?? "n/a"}, predicted=${sentimentPreview.mood ?? "n/a"})`,
@@ -598,7 +668,9 @@ function renderSentimentEvalSection(expectedSentiment: JournalBenchmarkSample["e
         <span>Copy Eval</span>
       </button>
     </div>
+    <p class="mt-1 text-xs text-slate-400">LLM Server: <span class="font-mono">${escapeHtml(selectedServer)}</span></p>
     <p class="mt-1 text-xs text-slate-400">Model: <span class="font-mono">${escapeHtml(selectedModel)}</span></p>
+    <p class="mt-1 text-xs text-slate-400"><span class="font-mono">${escapeHtml(timestampText)} / ${escapeHtml(latencyText)}</span></p>
     <pre id="journal-sentiment-eval-copy" class="hidden">${escapeHtml(sentimentEvalMarkdown)}</pre>
     <div class="mt-2 flex flex-wrap items-center gap-2">
       <div class="inline-flex items-baseline gap-2 rounded-xl border px-3 py-2 ${overallToneClass}">
@@ -721,7 +793,9 @@ function renderJournalLlmControls(params?: {
   entriesParsedOnce?: boolean;
   finalized?: boolean;
   selectedEntriesModel?: string;
+  selectedEntriesServer?: string;
   selectedSentimentModel?: string;
+  selectedSentimentServer?: string;
   sentimentParsedOutputJson?: string;
   sentimentParsedPromptText?: string;
   sentimentParsedOnce?: boolean;
@@ -735,8 +809,11 @@ function renderJournalLlmControls(params?: {
   const sentimentParsedOnce = Boolean(params?.sentimentParsedOnce);
   const selectedEntriesModel = params?.selectedEntriesModel ?? resolveJournalSelectedModel();
   const selectedSentimentModel = params?.selectedSentimentModel ?? resolveJournalSelectedModel();
+  const selectedEntriesServer = resolveJournalSelectedServer(params?.selectedEntriesServer).id;
+  const selectedSentimentServer = resolveJournalSelectedServer(params?.selectedSentimentServer).id;
   const uiMode = params?.uiMode ?? "prod";
   const modelOptions = getJournalModelOptions();
+  const serverOptions = getJournalServerOptions();
   const disabledAttr = finalized ? " disabled" : "";
 
   if (!journalLlmEnabled) {
@@ -750,6 +827,8 @@ function renderJournalLlmControls(params?: {
           <p class="text-lg font-bold tracking-tight text-white sm:text-xl">Parse Journal</p>
           <p class="mt-1 text-sm text-slate-300">Extract tennis content</p>
         </div>
+        <input type="hidden" name="journalServerEntries" value="${escapeHtml(selectedEntriesServer)}" />
+        <input type="hidden" name="journalServerSentiment" value="${escapeHtml(selectedSentimentServer)}" />
         <input type="hidden" name="journalModelEntries" value="${escapeHtml(resolveJournalSelectedModel(env.JOURNAL_LLM_MODEL))}" />
         <input type="hidden" name="journalModelSentiment" value="${escapeHtml(resolveJournalSelectedModel(env.JOURNAL_LLM_MODEL))}" />
         <input type="hidden" name="compareModels" value="false" />
@@ -766,6 +845,12 @@ function renderJournalLlmControls(params?: {
         <div class="mb-3">
           <p class="text-lg font-bold tracking-tight text-white sm:text-xl">Parse Journal</p>
           <p class="mt-1 text-sm text-slate-300">Extract structured entries</p>
+        </div>
+        <div class="grid gap-1">
+          <label class="text-sm font-medium text-slate-300">LLM Server</label>
+          <select id="journal-server-select-entries" name="journalServerEntries"${disabledAttr} class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2">
+            ${serverOptions.map((server) => `<option value="${escapeHtml(server.id)}"${server.id === selectedEntriesServer ? " selected" : ""}>${escapeHtml(server.label)}</option>`).join("")}
+          </select>
         </div>
         <div class="grid gap-1">
           <label class="text-sm font-medium text-slate-300">Model</label>
@@ -789,6 +874,12 @@ function renderJournalLlmControls(params?: {
         <div class="mb-3">
           <p class="text-lg font-bold tracking-tight text-white sm:text-xl">Parse Journal Sentiment</p>
           <p class="mt-1 text-sm text-slate-300">Extract mood, intensity, format, and tags</p>
+        </div>
+        <div class="grid gap-1">
+          <label class="text-sm font-medium text-slate-300">LLM Server</label>
+          <select id="journal-server-select-sentiment" name="journalServerSentiment"${disabledAttr} class="w-full rounded-xl border border-cyan-300/20 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none ring-cyan-400 focus:ring-2">
+            ${serverOptions.map((server) => `<option value="${escapeHtml(server.id)}"${server.id === selectedSentimentServer ? " selected" : ""}>${escapeHtml(server.label)}</option>`).join("")}
+          </select>
         </div>
         <div class="grid gap-1">
           <label class="text-sm font-medium text-slate-300">Model</label>
@@ -936,7 +1027,11 @@ function journalShell(options?: {
   finalized?: boolean;
   journalId?: string;
   rawText?: string;
+  selectedEntriesModel?: string;
+  selectedEntriesServer?: string;
   selectedModel?: string;
+  selectedSentimentModel?: string;
+  selectedSentimentServer?: string;
   uiMode?: JournalUiMode;
 }) {
   const journalId = options?.journalId ?? "";
@@ -944,7 +1039,10 @@ function journalShell(options?: {
   const finalized = Boolean(options?.finalized);
   const compareModels = Boolean(options?.compareModels);
   const uiMode = options?.uiMode ?? "prod";
-  const selectedModel = options?.selectedModel ?? resolveJournalSelectedModel();
+  const selectedEntriesModel = options?.selectedEntriesModel ?? options?.selectedModel ?? resolveJournalSelectedModel();
+  const selectedSentimentModel = options?.selectedSentimentModel ?? options?.selectedModel ?? resolveJournalSelectedModel();
+  const selectedEntriesServer = resolveJournalSelectedServer(options?.selectedEntriesServer).id;
+  const selectedSentimentServer = resolveJournalSelectedServer(options?.selectedSentimentServer).id;
   const benchmarkSample = options?.benchmarkSample ?? null;
   const readOnlyAttrs = finalized ? " readonly disabled" : "";
   const readOnlyClass = finalized ? " opacity-60 cursor-not-allowed bg-slate-800/80 border-slate-500/40" : "";
@@ -993,7 +1091,17 @@ Off court I kept things simple with a short walk, a mobility routine, and extra 
         <input id="journal-id-input" type="hidden" name="journalId" value="${escapeHtml(journalId)}" />
         <input id="journal-ui-mode-input" type="hidden" name="journalUiMode" value="${uiMode}" />
         ${benchmarkSample ? `<input id="journal-benchmark-sample-id-input" type="hidden" name="benchmarkSampleId" value="${escapeHtml(benchmarkSample.id)}" />` : ""}
-        <div id="journal-llm-controls">${renderJournalLlmControls({ selectedEntriesModel: selectedModel, selectedSentimentModel: selectedModel, compareModels, finalized, uiMode, entriesParsedOnce: false, sentimentParsedOnce: false })}</div>
+        <div id="journal-llm-controls">${renderJournalLlmControls({
+          selectedEntriesModel,
+          selectedEntriesServer,
+          selectedSentimentModel,
+          selectedSentimentServer,
+          compareModels,
+          finalized,
+          uiMode,
+          entriesParsedOnce: false,
+          sentimentParsedOnce: false,
+        })}</div>
         <div class="flex flex-wrap items-center gap-3">
           ${resetButton}
           <p class="form-status min-h-0 text-sm font-medium text-emerald-300"></p>
@@ -1156,7 +1264,10 @@ function renderEntriesParseOutput(params: {
   journalId: string;
   parsedOutputJson?: string;
   parsedPromptText?: string;
+  evalTimestamp?: string;
+  selectedLatencyMs?: number;
   selectedModel?: string;
+  selectedServer?: string;
   uiMode?: JournalUiMode;
 }) {
   const {
@@ -1168,7 +1279,10 @@ function renderEntriesParseOutput(params: {
     journalId,
     parsedOutputJson,
     parsedPromptText,
+    evalTimestamp,
+    selectedLatencyMs,
     selectedModel,
+    selectedServer,
     uiMode = "prod",
   } = params;
   const compareHtml = compareResults.length > 0
@@ -1222,7 +1336,7 @@ function renderEntriesParseOutput(params: {
     `;
   }).join("");
 
-  const evalHtml = renderEntriesEvalSection(expectedEntryKinds, candidates, selectedModel);
+  const evalHtml = renderEntriesEvalSection(expectedEntryKinds, candidates, selectedModel, selectedServer, evalTimestamp, selectedLatencyMs);
   const cardsSection = cards
     ? `<details class="mt-3 rounded-2xl border border-cyan-300/20 bg-slate-900/30 p-3">
       <summary class="cursor-pointer select-none text-sm font-semibold text-cyan-100">Show Parsed Entries (${candidates.length})</summary>
@@ -1244,10 +1358,12 @@ function renderSentimentParseOutput(params: {
   expectedSentiment?: JournalBenchmarkSample["expectedSentiment"];
   parsedOutputJson?: string;
   parsedPromptText?: string;
+  evalTimestamp?: string;
   selectedModel?: string;
+  selectedServer?: string;
   sentimentPreview: JournalSentimentPreview;
 }) {
-  const { compareResults = [], expectedSentiment, parsedOutputJson, parsedPromptText, selectedModel, sentimentPreview } = params;
+  const { compareResults = [], expectedSentiment, parsedOutputJson, parsedPromptText, evalTimestamp, selectedModel, selectedServer, sentimentPreview } = params;
   const compareHtml = compareResults.length > 0
     ? `<section class="mb-3 rounded-2xl border border-cyan-300/20 bg-slate-900/40 p-4 text-sm text-slate-200">
       <p class="text-xs uppercase tracking-wide text-cyan-300/80">Sentiment Model Compare</p>
@@ -1276,7 +1392,7 @@ function renderSentimentParseOutput(params: {
             ${sentimentPreview.confidence != null ? `<span class="rounded-full border border-slate-400/35 bg-slate-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-200">Confidence: ${Math.round(sentimentPreview.confidence * 100)}%</span>` : ""}
           </div>`}
     </section>`;
-  const evalHtml = renderSentimentEvalSection(expectedSentiment, sentimentPreview);
+  const evalHtml = renderSentimentEvalSection(expectedSentiment, sentimentPreview, selectedServer, evalTimestamp);
   const content = `${evalHtml}${renderLlmDebugSections({
     debugPromptId: "journal-llm-debug-prompt-sentiment",
     debugOutputId: "journal-llm-debug-output-sentiment",
@@ -1298,7 +1414,9 @@ function renderJournalPreview(params: {
   finalized?: boolean;
   journalId: string;
   selectedEntriesModel?: string;
+  selectedEntriesServer?: string;
   selectedSentimentModel?: string;
+  selectedSentimentServer?: string;
   sentimentParsedOutputJson?: string;
   sentimentParsedPromptText?: string;
   sentimentParsedOnce?: boolean;
@@ -1320,7 +1438,9 @@ function renderJournalPreview(params: {
     finalized,
     rawText,
     selectedEntriesModel,
+    selectedEntriesServer,
     selectedSentimentModel,
+    selectedSentimentServer,
     sentimentParsedOutputJson,
     sentimentParsedPromptText,
     sentimentParsedOnce,
@@ -1416,7 +1536,9 @@ function renderJournalPreview(params: {
     entriesParsedOnce,
     finalized: Boolean(finalized),
     selectedEntriesModel,
+    selectedEntriesServer,
     selectedSentimentModel,
+    selectedSentimentServer,
     sentimentParsedOutputJson,
     sentimentParsedPromptText,
     sentimentParsedOnce,
@@ -1429,6 +1551,7 @@ function renderJournalPreview(params: {
 }
 
 async function computeJournalPreviewCandidates(params: {
+  baseUrl: string;
   compareModels: boolean;
   journalLogId: string;
   selectedModel: string;
@@ -1439,10 +1562,11 @@ async function computeJournalPreviewCandidates(params: {
   items: StructuredIngestInput[];
   promptText?: string;
   parsedOutputJson?: string;
+  selectedDurationMs?: number;
   result: IngestResult;
   usedFallback: boolean;
 }> {
-  const { compareModels, journalLogId, selectedModel, text, userId } = params;
+  const { baseUrl, compareModels, journalLogId, selectedModel, text, userId } = params;
   const fallbackWarning = "Deterministic parser fallback used. Please review candidates before saving.";
   const applyFallbackWarning = (itemsToUpdate: StructuredIngestInput[]): StructuredIngestInput[] =>
     itemsToUpdate.map((item) => {
@@ -1475,7 +1599,7 @@ async function computeJournalPreviewCandidates(params: {
   }> => {
     const startedAt = Date.now();
     try {
-      const llmResult = await extractJournalCandidatesLLM(text, { model });
+      const llmResult = await extractJournalCandidatesLLM(text, { baseUrl, model });
       const result = await runValidation(llmResult.items);
       const durationMs = Date.now() - startedAt;
       const debugOutput = llmResult.rawOutputText || llmResult.parsedOutputJson;
@@ -1517,6 +1641,7 @@ async function computeJournalPreviewCandidates(params: {
   let items: StructuredIngestInput[];
   let promptText: string | undefined;
   let parsedOutputJson: string | undefined;
+  let selectedDurationMs: number | undefined;
   let result: IngestResult;
   if (journalLlmEnabled && selectedModel) {
     const primaryAttempt = await runModelAttempt(selectedModel);
@@ -1538,6 +1663,7 @@ async function computeJournalPreviewCandidates(params: {
       items = primaryAttempt.result.candidates;
       promptText = primaryAttempt.promptText;
       parsedOutputJson = primaryAttempt.parsedOutputJson;
+      selectedDurationMs = primaryAttempt.durationMs;
       result = primaryAttempt.result;
       logIngestEvent("journal_llm_extract_success", {
         journalId: journalLogId,
@@ -1549,6 +1675,7 @@ async function computeJournalPreviewCandidates(params: {
       usedFallback = true;
       promptText = primaryAttempt.promptText;
       parsedOutputJson = primaryAttempt.parsedOutputJson;
+      selectedDurationMs = primaryAttempt.durationMs;
       logIngestEvent("journal_llm_extract_failure", {
         journalId: journalLogId,
         model: selectedModel,
@@ -1580,10 +1707,11 @@ async function computeJournalPreviewCandidates(params: {
     });
   }
 
-  return { items, promptText, parsedOutputJson, result, usedFallback, compareResults };
+  return { items, promptText, parsedOutputJson, selectedDurationMs, result, usedFallback, compareResults };
 }
 
 async function computeJournalSentimentPreview(params: {
+  baseUrl: string;
   compareModels?: boolean;
   model: string;
   text: string;
@@ -1593,7 +1721,7 @@ async function computeJournalSentimentPreview(params: {
   promptText?: string;
   sentimentPreview: JournalSentimentPreview;
 }> {
-  const { compareModels = false, model, text } = params;
+  const { baseUrl, compareModels = false, model, text } = params;
 
   const runSentimentAttempt = async (candidateModel: string): Promise<{
     durationMs: number;
@@ -1605,7 +1733,7 @@ async function computeJournalSentimentPreview(params: {
   }> => {
     const startedAt = Date.now();
     try {
-      const sentimentResult = await extractJournalSentimentLLM(text, { model: candidateModel });
+      const sentimentResult = await extractJournalSentimentLLM(text, { baseUrl, model: candidateModel });
       return {
         model: candidateModel,
         durationMs: Date.now() - startedAt,
@@ -1999,6 +2127,8 @@ app.post("/api/journal/preview", async (c) => {
     : undefined;
   const requestedEntriesModel = String(body.journalModelEntries ?? body.journalModel ?? "").trim();
   const requestedSentimentModel = String(body.journalModelSentiment ?? body.journalModel ?? "").trim();
+  const requestedEntriesServer = String(body.journalServerEntries ?? "").trim();
+  const requestedSentimentServer = String(body.journalServerSentiment ?? "").trim();
   const parseTarget = String(body.parseTarget ?? "entries").trim().toLowerCase() === "sentiment" ? "sentiment" : "entries";
   const compareModelsRequested = ["1", "on", "true", "yes"].includes(String(body.compareModels ?? "").trim().toLowerCase());
   const compareSentimentModelsRequested = ["1", "on", "true", "yes"].includes(String(body.compareSentimentModels ?? "").trim().toLowerCase());
@@ -2010,6 +2140,15 @@ app.post("/api/journal/preview", async (c) => {
   const selectedSentimentModel = uiMode === "dev"
     ? resolveJournalSelectedModel(requestedSentimentModel || requestedEntriesModel)
     : resolveJournalSelectedModel(env.JOURNAL_LLM_MODEL);
+  const selectedEntriesServer = uiMode === "dev"
+    ? resolveJournalSelectedServer(requestedEntriesServer).id
+    : resolveJournalSelectedServer().id;
+  const selectedSentimentServer = uiMode === "dev"
+    ? resolveJournalSelectedServer(requestedSentimentServer || requestedEntriesServer).id
+    : resolveJournalSelectedServer().id;
+  const selectedEntriesBaseUrl = resolveJournalServerBaseUrl(selectedEntriesServer);
+  const selectedSentimentBaseUrl = resolveJournalServerBaseUrl(selectedSentimentServer);
+  const evalTimestamp = formatEvalTimestamp(new Date());
   if (!text) {
     return c.html(`<section class="glass mx-auto mt-4 w-full max-w-[24.5rem] rounded-2xl border border-amber-300/20 p-4 text-sm text-amber-100 sm:max-w-3xl">Enter journal text before previewing.</section>`);
   }
@@ -2023,6 +2162,7 @@ app.post("/api/journal/preview", async (c) => {
 
   if (parseTarget === "sentiment") {
     const sentiment = await computeJournalSentimentPreview({
+      baseUrl: selectedSentimentBaseUrl,
       compareModels: compareSentimentModels,
       model: selectedSentimentModel,
       text,
@@ -2030,8 +2170,10 @@ app.post("/api/journal/preview", async (c) => {
     if (uiMode === "dev") {
       return c.html(renderSentimentParseOutput({
         compareResults: sentiment.compareResults,
+        evalTimestamp,
         expectedSentiment: benchmarkSample?.expectedSentiment,
         selectedModel: selectedSentimentModel,
+        selectedServer: selectedSentimentServer,
         parsedPromptText: sentiment.promptText,
         parsedOutputJson: sentiment.parsedOutputJson,
         sentimentPreview: sentiment.sentimentPreview,
@@ -2043,7 +2185,9 @@ app.post("/api/journal/preview", async (c) => {
       compareModels,
       errors: [],
       selectedEntriesModel,
+      selectedEntriesServer,
       selectedSentimentModel,
+      selectedSentimentServer,
       entriesParsedOnce: false,
       sentimentParsedOnce: true,
       sentimentParsedPromptText: sentiment.promptText,
@@ -2055,7 +2199,8 @@ app.post("/api/journal/preview", async (c) => {
     }));
   }
 
-  const { items, result, compareResults, parsedOutputJson, promptText } = await computeJournalPreviewCandidates({
+  const { items, result, compareResults, parsedOutputJson, promptText, selectedDurationMs } = await computeJournalPreviewCandidates({
+    baseUrl: selectedEntriesBaseUrl,
     compareModels,
     journalLogId: journalId,
     selectedModel: selectedEntriesModel,
@@ -2069,9 +2214,12 @@ app.post("/api/journal/preview", async (c) => {
         journalId,
         candidates: [],
         compareResults,
+        evalTimestamp,
         errors: [],
         expectedEntryKinds: benchmarkSample?.expectedEntryKinds,
+        selectedLatencyMs: selectedDurationMs,
         selectedModel: selectedEntriesModel,
+        selectedServer: selectedEntriesServer,
         parsedPromptText: promptText,
         parsedOutputJson,
         uiMode,
@@ -2084,7 +2232,9 @@ app.post("/api/journal/preview", async (c) => {
       compareModels,
       errors: [],
       selectedEntriesModel,
+      selectedEntriesServer,
       selectedSentimentModel,
+      selectedSentimentServer,
       compareResults,
       entriesParsedPromptText: promptText,
       entriesParsedOutputJson: parsedOutputJson,
@@ -2126,9 +2276,12 @@ app.post("/api/journal/preview", async (c) => {
       journalId,
       candidates: result.candidates,
       compareResults,
+      evalTimestamp,
       errors: result.errors,
       expectedEntryKinds: benchmarkSample?.expectedEntryKinds,
+      selectedLatencyMs: selectedDurationMs,
       selectedModel: selectedEntriesModel,
+      selectedServer: selectedEntriesServer,
       parsedPromptText: promptText,
       parsedOutputJson,
       uiMode,
@@ -2142,7 +2295,9 @@ app.post("/api/journal/preview", async (c) => {
     compareModels,
     errors: result.errors,
     selectedEntriesModel,
+    selectedEntriesServer,
     selectedSentimentModel,
+    selectedSentimentServer,
     compareResults,
     entriesParsedPromptText: promptText,
     entriesParsedOutputJson: parsedOutputJson,
@@ -2171,14 +2326,18 @@ app.post("/api/journal/preview-test", async (c) => {
 
   const text = String(rawBody.text ?? "").trim();
   const requestedModel = String(rawBody.journalModel ?? "").trim();
+  const requestedServer = String(rawBody.journalServer ?? "").trim();
   const compareModels = ["1", "on", "true", "yes"].includes(String(rawBody.compareModels ?? "").trim().toLowerCase());
   const selectedModel = resolveJournalSelectedModel(requestedModel);
+  const selectedServer = resolveJournalSelectedServer(requestedServer).id;
+  const selectedBaseUrl = resolveJournalServerBaseUrl(selectedServer);
 
   if (!text) {
     return c.json({ error: "text is required." }, 400);
   }
 
   const computed = await computeJournalPreviewCandidates({
+    baseUrl: selectedBaseUrl,
     compareModels,
     journalLogId: "preview-test",
     selectedModel,
@@ -2191,6 +2350,7 @@ app.post("/api/journal/preview-test", async (c) => {
     compareResults: computed.compareResults,
     errors: computed.result.errors,
     selectedModel,
+    selectedServer,
     usedFallback: computed.usedFallback,
     warnings: computed.result.warnings,
   });

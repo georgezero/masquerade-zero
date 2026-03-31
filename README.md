@@ -442,6 +442,7 @@ JOURNAL_LLM_PROVIDER=openai-compatible
 JOURNAL_LLM_BASE_URL=https://mango.fff.ad/v1
 JOURNAL_LLM_BASE_URL_SECONDARY=http://guava.mllm.bet/v1
 JOURNAL_LLM_USE_SECONDARY_BASE_URL=false
+JOURNAL_LLM_SERVERS_JSON=[{"id":"papaya","label":"papaya (m4pro-mbp)","baseUrl":"http://192.168.86.28:1234/v1"},{"id":"goro","label":"goro (m3max-mbp)","baseUrl":"http://192.168.86.21:1234/v1"},{"id":"mango","label":"mango (m3max-mbp)","baseUrl":"https://mango.fff.ad/v1"}]
 JOURNAL_LLM_API_KEY=lmstudio
 JOURNAL_LLM_MODEL=openai/gpt-oss-20b
 JOURNAL_LLM_SECONDARY_MODEL=qwen3.5-9b-mlx
@@ -457,6 +458,7 @@ Behavior:
 - Secondary model: `JOURNAL_LLM_SECONDARY_MODEL` (`qwen3.5-9b-mlx` in the example above).
 - Tertiary model: `JOURNAL_LLM_TERTIARY_MODEL` (`qwen3.5-4b-mlx` in the example above).
 - Endpoint selection: set `JOURNAL_LLM_USE_SECONDARY_BASE_URL=true` to use `JOURNAL_LLM_BASE_URL_SECONDARY` instead of `JOURNAL_LLM_BASE_URL`.
+- Benchmark server dropdown options (`papaya/goro/mango` style labels and base URLs) come from `JOURNAL_LLM_SERVERS_JSON`.
 - `/api/journal/preview` tries LLM extraction first.
 - `JOURNAL_LLM_TWO_PASS=true` switches to a two-step pipeline: pass 1 recall candidates, pass 2 strict schema mapping.
 - LLM output still passes the existing ingest validation dry-run.
@@ -512,6 +514,7 @@ Reference docs:
 - Qwen 9B benchmark (`/no_think` vs default, plus openai comparison): `docs/journal-llm-qwen9b-no-think-benchmark.md`
 - API/script testing guide: `docs/journal-llm-api-testing.md`
 - Journal dev benchmark eval UI + TODOs (`/journal-dev-benchmark`): `docs/journal-dev-benchmark-eval-ui.md`
+- Future local deployment migration plan (SQLite + SimpleAuth): `docs/future-local-deployment.md`
 
 ---
 
