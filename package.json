@@ -1,5 +1,5 @@
 {
-  "name": "tennis-zero-six-alpha",
+  "name": "masquerade",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,16 +8,13 @@
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test 'src/**/__tests__/*.test.ts'",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "node scripts/migrate.mjs",
-    "test:ingest-api": "tsx scripts/test-ingest-api.ts",
-    "test:ingest-api:db": "tsx scripts/test-ingest-api-db.ts",
-    "test:ingest-api:scopes": "tsx scripts/test-ingest-api-scopes.ts"
+    "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.4",
-    "@neondatabase/serverless": "^1.0.2",
+    "@libsql/client": "^0.14.0",
     "dotenv": "^16.5.0",
     "drizzle-orm": "^0.44.5",
     "hono": "^4.9.6",

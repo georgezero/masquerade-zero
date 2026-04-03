@@ -1,224 +1,160 @@
 import {
-  boolean,
   index,
   integer,
-  pgEnum,
-  pgTable,
   primaryKey,
+  sqliteTable,
   text,
-  timestamp,
   uniqueIndex,
-  uuid,
-} from 'drizzle-orm/pg-core';
+} from "drizzle-orm/sqlite-core";
+import { relations, sql } from "drizzle-orm";
 
-export const sexEnum = pgEnum('sex', ['male', 'female', 'other', 'prefer_not_to_say']);
+// ── Word content ─────────────────────────────────────────────────────────────
 
-export const exerciseTypeEnum = pgEnum('exercise_type', [
-  'Strength',
-  'Cardio',
-  'Mobility',
-  'Recovery',
-  'Other',
-]);
+export const wordPacks = sqliteTable("word_packs", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  name: text("name").notNull(),
+  category: text("category").notNull(),
+  description: text("description"),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
 
-const timestamps = {
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-};
+export const wordPairs = sqliteTable("word_pairs", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  packId: text("pack_id").notNull().references(() => wordPacks.id, { onDelete: "cascade" }),
+  civilianWord: text("civilian_word").notNull(),
+  imposterWord: text("imposter_word"), // nullable = imposter sees nothing (hard mode)
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+});
 
-export const userProfiles = pgTable(
-  'user_profiles',
+// ── Game state ────────────────────────────────────────────────────────────────
+
+export const gameRooms = sqliteTable(
+  "game_rooms",
   {
-    userId: text('user_id').primaryKey(),
-    email: text('email').notNull(),
-    firstName: text('first_name'),
-    lastName: text('last_name'),
-    displayName: text('display_name'),
-    sex: sexEnum('sex'),
-    tennisNickname: text('tennis_nickname'),
-    birthYear: integer('birth_year'),
-    avatarUrl: text('avatar_url'),
-    timezone: text('timezone'),
-    profileCompletedAt: timestamp('profile_completed_at', { withTimezone: true }),
-    ...timestamps,
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    pin: text("pin").notNull(),
+    status: text("status", { enum: ["waiting", "active", "finished"] }).notNull().default("waiting"),
+    mode: text("mode", { enum: ["local", "online"] }).notNull().default("online"),
+    phase: text("phase", { enum: ["lobby", "reveal", "clues", "voting", "result"] }).notNull().default("lobby"),
+    roundNumber: integer("round_number").notNull().default(0),
+    maxRounds: integer("max_rounds").notNull().default(3),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
+    updatedAt: text("updated_at").notNull().default(sql`(datetime('now'))`),
   },
-  (table) => [
-    uniqueIndex('user_profiles_email_unique').on(table.email),
-    uniqueIndex('user_profiles_tennis_nickname_unique').on(table.tennisNickname),
+  (t) => [uniqueIndex("game_rooms_pin_unique").on(t.pin)],
+);
+
+export const players = sqliteTable(
+  "players",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    roomId: text("room_id").notNull().references(() => gameRooms.id, { onDelete: "cascade" }),
+    nickname: text("nickname").notNull(),
+    role: text("role", { enum: ["civilian", "imposter"] }),
+    word: text("word"), // null until game starts
+    sessionToken: text("session_token").notNull().$defaultFn(() => crypto.randomUUID()),
+    isHost: integer("is_host", { mode: "boolean" }).notNull().default(false),
+    wordRevealed: integer("word_revealed", { mode: "boolean" }).notNull().default(false),
+    joinedAt: text("joined_at").notNull().default(sql`(datetime('now'))`),
+    eliminated: integer("eliminated", { mode: "boolean" }).notNull().default(false),
+  },
+  (t) => [
+    uniqueIndex("players_session_token_unique").on(t.sessionToken),
+    uniqueIndex("players_room_nickname_unique").on(t.roomId, t.nickname),
+    index("players_room_id_idx").on(t.roomId),
+    index("players_session_idx").on(t.sessionToken),
   ],
 );
 
-export const playerProfiles = pgTable(
-  'player_profiles',
+export const rounds = sqliteTable(
+  "rounds",
   {
-    userId: text('user_id').primaryKey(),
-    utrSingles: text('utr_singles'),
-    utrDoubles: text('utr_doubles'),
-    ustaNtrpSingles: text('usta_ntrp_singles'),
-    ustaNtrpDoubles: text('usta_ntrp_doubles'),
-    dominantHand: text('dominant_hand'),
-    backhandStyle: text('backhand_style'),
-    level: text('level'),
-    yearsPlaying: integer('years_playing'),
-    singlesDoublesPreference: text('singles_doubles_preference'),
-    primaryGoals: text('primary_goals'),
-    trainingDays: text('training_days'),
-    coachName: text('coach_name'),
-    homeClub: text('home_club'),
-    preferredSessionMinutes: integer('preferred_session_minutes'),
-    injuryNotes: text('injury_notes'),
-    favoriteDrills: text('favorite_drills'),
-    playStyle: text('play_style'),
-    preferredSurfaces: text('preferred_surfaces'),
-    ratingsUpdatedAt: timestamp('ratings_updated_at', { withTimezone: true }),
-    ...timestamps,
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    roomId: text("room_id").notNull().references(() => gameRooms.id, { onDelete: "cascade" }),
+    pairId: text("pair_id").references(() => wordPairs.id),
+    roundNumber: integer("round_number").notNull(),
+    speakingOrderJson: text("speaking_order_json").notNull().default("[]"),
+    startedAt: text("started_at").notNull().default(sql`(datetime('now'))`),
+    endedAt: text("ended_at"),
+    imposterCaught: integer("imposter_caught", { mode: "boolean" }),
+    winner: text("winner", { enum: ["civilians", "imposter"] }),
   },
-  (table) => [index('player_profiles_user_id_idx').on(table.userId)],
+  (t) => [uniqueIndex("rounds_room_round_unique").on(t.roomId, t.roundNumber)],
 );
 
-export const goals = pgTable(
-  'goals',
+export const votes = sqliteTable(
+  "votes",
   {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: text('user_id').notNull(),
-    weekStart: text('week_start').notNull(),
-    planText: text('plan_text').notNull(),
-    ...timestamps,
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    roundId: text("round_id").notNull().references(() => rounds.id, { onDelete: "cascade" }),
+    voterId: text("voter_id").notNull().references(() => players.id),
+    targetId: text("target_id").notNull().references(() => players.id),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
   },
-  (table) => [index('goals_user_id_idx').on(table.userId)],
-);
-
-export const practices = pgTable(
-  'practices',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: text('user_id').notNull(),
-    date: text('date').notNull(),
-    withCoach: boolean('with_coach').default(false).notNull(),
-    coachName: text('coach_name'),
-    workedOn: text('worked_on').notNull(),
-    notes: text('notes').notNull().default(''),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [index('practices_user_id_idx').on(table.userId)],
-);
-
-export const matches = pgTable(
-  'matches',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: text('user_id').notNull(),
-    date: text('date').notNull(),
-    opponent: text('opponent').notNull(),
-    score: text('score').notNull().default(''),
-    notes: text('notes').notNull().default(''),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [index('matches_user_id_idx').on(table.userId)],
-);
-
-export const diets = pgTable(
-  'diets',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: text('user_id').notNull(),
-    date: text('date').notNull(),
-    summary: text('summary').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [index('diets_user_id_idx').on(table.userId)],
-);
-
-export const exercises = pgTable(
-  'exercises',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    userId: text('user_id').notNull(),
-    date: text('date').notNull(),
-    exerciseType: exerciseTypeEnum('exercise_type').notNull(),
-    durationMin: integer('duration_min').notNull(),
-    notes: text('notes').notNull().default(''),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [index('exercises_user_id_idx').on(table.userId)],
-);
-
-export const ingestIdempotency = pgTable(
-  "ingest_idempotency",
-  {
-    idempotencyKey: text("idempotency_key").primaryKey(),
-    requestHash: text("request_hash").notNull(),
-    status: text("status").notNull(),
-    statusCode: integer("status_code"),
-    responseBody: text("response_body"),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [index("ingest_idempotency_expires_at_idx").on(table.expiresAt)],
-);
-
-export const ingestRateLimits = pgTable(
-  "ingest_rate_limits",
-  {
-    bucketKey: text("bucket_key").notNull(),
-    windowStartMs: text("window_start_ms").notNull(),
-    count: integer("count").notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.bucketKey] }),
-    index("ingest_rate_limits_updated_at_idx").on(table.updatedAt),
+  (t) => [
+    uniqueIndex("votes_round_voter_unique").on(t.roundId, t.voterId),
+    index("votes_round_idx").on(t.roundId),
   ],
 );
 
-export const journalSubmissions = pgTable(
-  "journal_submissions",
+export const clues = sqliteTable(
+  "clues",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
-    userId: text("user_id").notNull(),
-    rawText: text("raw_text").notNull(),
-    status: text("status").notNull().default("draft"),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    roundId: text("round_id").notNull().references(() => rounds.id, { onDelete: "cascade" }),
+    playerId: text("player_id").notNull().references(() => players.id),
+    clueText: text("clue_text").notNull(),
+    createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
   },
-  (table) => [
-    index("journal_submissions_user_id_idx").on(table.userId),
-    index("journal_submissions_status_idx").on(table.status),
+  (t) => [
+    uniqueIndex("clues_round_player_unique").on(t.roundId, t.playerId),
+    index("clues_round_idx").on(t.roundId),
   ],
 );
 
-export const journalSubmissionCandidates = pgTable(
-  "journal_submission_candidates",
+// Junction table: which word pairs have been used in a game room
+export const gameRoomUsedPairs = sqliteTable(
+  "game_room_used_pairs",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
-    journalId: uuid("journal_id").notNull(),
-    candidateIndex: integer("candidate_index").notNull(),
-    kind: text("kind").notNull(),
-    confidence: integer("confidence").notNull(),
-    payloadJson: text("payload_json").notNull(),
-    status: text("status").notNull().default("pending"),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    roomId: text("room_id").notNull().references(() => gameRooms.id, { onDelete: "cascade" }),
+    pairId: text("pair_id").notNull().references(() => wordPairs.id),
   },
-  (table) => [
-    index("journal_submission_candidates_journal_id_idx").on(table.journalId),
-    uniqueIndex("journal_submission_candidates_journal_index_unique").on(table.journalId, table.candidateIndex),
-  ],
+  (t) => [primaryKey({ columns: [t.roomId, t.pairId] })],
 );
 
-export const journalSubmissionEntries = pgTable(
-  "journal_submission_entries",
-  {
-    id: uuid("id").defaultRandom().primaryKey(),
-    journalId: uuid("journal_id").notNull(),
-    candidateIndex: integer("candidate_index"),
-    kind: text("kind").notNull(),
-    entryId: text("entry_id").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (table) => [
-    index("journal_submission_entries_journal_id_idx").on(table.journalId),
-    index("journal_submission_entries_entry_id_idx").on(table.entryId),
-  ],
-);
+// ── Relations ─────────────────────────────────────────────────────────────────
+
+export const wordPacksRelations = relations(wordPacks, ({ many }) => ({
+  pairs: many(wordPairs),
+}));
+
+export const wordPairsRelations = relations(wordPairs, ({ one }) => ({
+  pack: one(wordPacks, { fields: [wordPairs.packId], references: [wordPacks.id] }),
+}));
+
+export const gameRoomsRelations = relations(gameRooms, ({ many }) => ({
+  players: many(players),
+  rounds: many(rounds),
+}));
+
+export const playersRelations = relations(players, ({ one }) => ({
+  room: one(gameRooms, { fields: [players.roomId], references: [gameRooms.id] }),
+}));
+
+export const roundsRelations = relations(rounds, ({ one, many }) => ({
+  room: one(gameRooms, { fields: [rounds.roomId], references: [gameRooms.id] }),
+  clues: many(clues),
+  votes: many(votes),
+}));
+
+export const cluesRelations = relations(clues, ({ one }) => ({
+  round: one(rounds, { fields: [clues.roundId], references: [rounds.id] }),
+  player: one(players, { fields: [clues.playerId], references: [players.id] }),
+}));
+
+export const votesRelations = relations(votes, ({ one }) => ({
+  round: one(rounds, { fields: [votes.roundId], references: [rounds.id] }),
+  voter: one(players, { fields: [votes.voterId], references: [players.id] }),
+  target: one(players, { fields: [votes.targetId], references: [players.id] }),
+}));

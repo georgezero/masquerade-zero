@@ -1,19 +1,27 @@
-import { neon } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-http";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 import { env } from "../env.js";
 import * as schema from "./schema.js";
 
-export const db = env.DATABASE_URL
-  ? drizzle(neon(env.DATABASE_URL), { schema })
-  : null;
-
-export function requireDb() {
-  if (!db) {
-    throw new Error("DATABASE_URL is not configured.");
+// Ensure data directory exists for local SQLite files
+if (env.DATABASE_URL.startsWith("file:")) {
+  const filePath = env.DATABASE_URL.replace("file:", "");
+  const dir = dirname(filePath);
+  if (dir !== ".") {
+    mkdirSync(dir, { recursive: true });
   }
-
-  return db;
 }
+
+const client = createClient({ url: env.DATABASE_URL });
+
+// Enable WAL mode for concurrent reads during writes (local SQLite only)
+if (env.DATABASE_URL.startsWith("file:")) {
+  await client.execute("PRAGMA journal_mode=WAL;");
+}
+
+export const db = drizzle(client, { schema });
 
 export { schema };
