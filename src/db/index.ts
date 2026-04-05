@@ -15,7 +15,7 @@ if (env.DATABASE_URL.startsWith("file:")) {
   }
 }
 
-const client = createClient({ url: env.DATABASE_URL });
+const client = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
 
 // Enable WAL mode for concurrent reads during writes (local SQLite only)
 if (env.DATABASE_URL.startsWith("file:")) {
