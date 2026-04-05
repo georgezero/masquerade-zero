@@ -2,6 +2,7 @@ import "dotenv/config";
 import { defineConfig } from "drizzle-kit";
 
 const databaseUrl = process.env.DATABASE_URL ?? "file:./data/masquerade.db";
+const authToken = process.env.DATABASE_AUTH_TOKEN;
 
 export default defineConfig({
   out: "./drizzle",
@@ -9,6 +10,7 @@ export default defineConfig({
   dialect: "turso",
   dbCredentials: {
     url: databaseUrl,
+    authToken,
   },
   strict: true,
   verbose: true,
