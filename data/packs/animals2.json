@@ -1,0 +1,26 @@
+{
+  "name": "Animals 2",
+  "category": "Nature",
+  "pairs": [
+    { "civilianWord": "Lion", "imposterWord": "A large mane-bearing African predator" },
+    { "civilianWord": "Zebra", "imposterWord": "A striped African horse-like animal" },
+    { "civilianWord": "Rhino", "imposterWord": "A large thick-skinned mammal with a horn on its nose" },
+    { "civilianWord": "Jellyfish", "imposterWord": "A translucent sea creature that can sting" },
+    { "civilianWord": "Chameleon", "imposterWord": "A reptile known for changing its appearance" },
+    { "civilianWord": "Bat", "imposterWord": "The only mammal capable of true flight, active at night" },
+    { "civilianWord": "Sloth", "imposterWord": "A very slow tree-dwelling mammal from South America" },
+    { "civilianWord": "Platypus", "imposterWord": "An unusual egg-laying mammal from Australia" },
+    { "civilianWord": "Manta Ray", "imposterWord": "A large flat ocean creature that glides through the water" },
+    { "civilianWord": "Chimpanzee", "imposterWord": "An intelligent African ape closely related to humans" },
+    { "civilianWord": "Komodo Dragon", "imposterWord": "The world's largest lizard, found on Indonesian islands" },
+    { "civilianWord": "Hummingbird", "imposterWord": "A tiny fast-flying bird that hovers while feeding on nectar" },
+    { "civilianWord": "Sea Turtle", "imposterWord": "An ancient reptile that migrates long distances in the ocean" },
+    { "civilianWord": "Narwhal", "imposterWord": "An arctic whale with a long spiral tusk" },
+    { "civilianWord": "Axolotl", "imposterWord": "An aquatic salamander that never fully metamorphoses" },
+    { "civilianWord": "Capybara", "imposterWord": "The world's largest rodent, native to South America" },
+    { "civilianWord": "Meerkat", "imposterWord": "A small African mammal known for standing upright on lookout" },
+    { "civilianWord": "Snow Leopard", "imposterWord": "A rare elusive big cat from Central Asian mountains" },
+    { "civilianWord": "Otter", "imposterWord": "A playful semi-aquatic mammal that floats on its back" },
+    { "civilianWord": "Pangolin", "imposterWord": "A shy scaly mammal that curls into a ball when threatened" }
+  ]
+}

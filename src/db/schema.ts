@@ -17,7 +17,7 @@ export const wordPacks = sqliteTable("word_packs", {
   description: text("description"),
   active: integer("active", { mode: "boolean" }).notNull().default(true),
   createdAt: text("created_at").notNull().default(sql`(datetime('now'))`),
-});
+}, (t) => [uniqueIndex("word_packs_name_unique").on(t.name)]);
 
 export const wordPairs = sqliteTable("word_pairs", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -25,7 +25,7 @@ export const wordPairs = sqliteTable("word_pairs", {
   civilianWord: text("civilian_word").notNull(),
   imposterWord: text("imposter_word"), // nullable = imposter sees nothing (hard mode)
   active: integer("active", { mode: "boolean" }).notNull().default(true),
-});
+}, (t) => [uniqueIndex("word_pairs_pack_civilian_unique").on(t.packId, t.civilianWord)]);
 
 // ── Game state ────────────────────────────────────────────────────────────────
 

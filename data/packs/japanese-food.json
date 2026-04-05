@@ -1,0 +1,26 @@
+{
+  "name": "Japanese Food",
+  "category": "Food",
+  "pairs": [
+    { "civilianWord": "Sushi", "imposterWord": "A Japanese dish combining rice with toppings or fillings" },
+    { "civilianWord": "Ramen", "imposterWord": "A hot Japanese noodle soup" },
+    { "civilianWord": "Tempura", "imposterWord": "Japanese food that is lightly battered and fried" },
+    { "civilianWord": "Miso Soup", "imposterWord": "A traditional Japanese broth served with most meals" },
+    { "civilianWord": "Takoyaki", "imposterWord": "A round Japanese street food cooked in a special pan" },
+    { "civilianWord": "Yakitori", "imposterWord": "Grilled Japanese food served on skewers" },
+    { "civilianWord": "Onigiri", "imposterWord": "A portable Japanese rice snack, often wrapped in seaweed" },
+    { "civilianWord": "Matcha", "imposterWord": "A finely ground Japanese green tea powder used in drinks and desserts" },
+    { "civilianWord": "Gyoza", "imposterWord": "Pan-fried Japanese dumplings" },
+    { "civilianWord": "Tonkatsu", "imposterWord": "A breaded and fried Japanese meat cutlet" },
+    { "civilianWord": "Edamame", "imposterWord": "A popular Japanese snack of salted boiled legumes" },
+    { "civilianWord": "Mochi", "imposterWord": "A chewy Japanese treat made from pounded rice" },
+    { "civilianWord": "Yakisoba", "imposterWord": "Japanese stir-fried noodles with vegetables and sauce" },
+    { "civilianWord": "Tofu", "imposterWord": "A soft white Japanese food made from soybeans" },
+    { "civilianWord": "Shabu-Shabu", "imposterWord": "A Japanese hot pot dish where you swish thin slices of meat in broth" },
+    { "civilianWord": "Soba", "imposterWord": "Thin Japanese noodles made from buckwheat" },
+    { "civilianWord": "Taiyaki", "imposterWord": "A Japanese pastry baked in a distinctive mold, filled with sweet paste" },
+    { "civilianWord": "Karaage", "imposterWord": "Bite-sized Japanese fried chicken" },
+    { "civilianWord": "Unagi", "imposterWord": "A Japanese dish of grilled freshwater eel over rice" },
+    { "civilianWord": "Wagashi", "imposterWord": "Traditional Japanese sweets often served with tea" }
+  ]
+}

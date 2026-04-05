@@ -8,6 +8,13 @@
       "when": 1775174773866,
       "tag": "0000_rapid_veda",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1775428615255,
+      "tag": "0001_wise_rage",
+      "breakpoints": true
     }
   ]
 }
