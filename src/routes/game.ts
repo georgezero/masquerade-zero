@@ -209,7 +209,7 @@ gameRouter.get("/rooms/:pin", async (c) => {
       ? (players.find((p) => !p.wordRevealed && !p.eliminated) ?? player)
       : player;
     const revealRound = await getCurrentRound(room.id);
-    const revealPair = revealRound ? await db.query.wordPairs.findFirst({ where: eq(schema.wordPairs.id, revealRound.pairId) }) : null;
+    const revealPair = revealRound?.pairId ? await db.query.wordPairs.findFirst({ where: eq(schema.wordPairs.id, revealRound.pairId) }) : null;
     const revealPack = revealPair ? await db.query.wordPacks.findFirst({ where: eq(schema.wordPacks.id, revealPair.packId) }) : null;
     return c.html(revealPage(revealPlayer, room, revealPack?.name ?? null));
   }
@@ -395,7 +395,7 @@ gameRouter.get("/rooms/:pin/reveal", async (c) => {
   const { player, room } = ctx;
   if (room.phase !== "reveal") return c.redirect(`/rooms/${pin}`);
   const revRound = await getCurrentRound(room.id);
-  const revPair = revRound ? await db.query.wordPairs.findFirst({ where: eq(schema.wordPairs.id, revRound.pairId) }) : null;
+  const revPair = revRound?.pairId ? await db.query.wordPairs.findFirst({ where: eq(schema.wordPairs.id, revRound.pairId) }) : null;
   const revPack = revPair ? await db.query.wordPacks.findFirst({ where: eq(schema.wordPacks.id, revPair.packId) }) : null;
   return c.html(revealPage(player, room, revPack?.name ?? null));
 });
