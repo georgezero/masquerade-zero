@@ -15,7 +15,12 @@ if (env.DATABASE_URL.startsWith("file:")) {
   }
 }
 
-const client = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+// Vercel serverless requires https:// (HTTP transport) instead of libsql:// (WebSocket)
+const url = env.DATABASE_URL.startsWith("libsql://")
+  ? env.DATABASE_URL.replace("libsql://", "https://")
+  : env.DATABASE_URL;
+
+const client = createClient({ url, authToken: env.DATABASE_AUTH_TOKEN });
 
 // Enable WAL mode for concurrent reads during writes (local SQLite only)
 if (env.DATABASE_URL.startsWith("file:")) {
