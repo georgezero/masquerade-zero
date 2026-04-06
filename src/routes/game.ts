@@ -239,12 +239,12 @@ gameRouter.get("/rooms/:pin", async (c) => {
     return c.html(votingPage(room, players, votingPlayer, votes, player.isHost));
   }
   if (room.phase === "result") {
-    const eliminated = players.find((p) => p.id === round.endedAt) ?? null; // placeholder
     const imposter = players.find((p) => p.role === "imposter") ?? null;
-    const eliminatedByVote = round.endedAt
-      ? players.find((p) => p.eliminated && p.id !== imposter?.id) ?? null
+    const eliminatedByVote = players.find((p) => p.eliminated && p.id !== imposter?.id) ?? null;
+    const pair = round.pairId
+      ? await db.query.wordPairs.findFirst({ where: eq(schema.wordPairs.id, round.pairId) })
       : null;
-    return c.html(resultPage(room, players, round, eliminatedByVote, imposter, player.isHost));
+    return c.html(resultPage(room, players, round, eliminatedByVote, imposter, player.isHost, pair?.civilianWord ?? null));
   }
 
   return c.html(errorPage("Unknown game phase"), 500);

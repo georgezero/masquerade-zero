@@ -486,6 +486,7 @@ export function resultPage(
   eliminatedPlayer: Player | null,
   imposter: Player | null,
   isHost: boolean,
+  civilianWord: string | null = null,
 ) {
   const gameOver = room.status === "finished";
   const imposterCaught = round.imposterCaught;
@@ -511,12 +512,16 @@ export function resultPage(
         }
 
         ${imposter ? `
-        <div class="rounded-xl border border-rose-500/20 bg-rose-950/20 px-4 py-3">
+        <div class="rounded-xl border border-rose-500/20 bg-rose-950/20 px-4 py-3 space-y-1">
           <p class="text-xs uppercase tracking-widest text-rose-400 mb-1">The Imposter was</p>
           <p class="text-xl font-black text-rose-200">${escapeHtml(imposter.nickname)}</p>
+          ${civilianWord
+            ? `<p class="text-sm text-slate-400">The real word: <span class="text-white font-bold">${escapeHtml(civilianWord)}</span></p>`
+            : ""
+          }
           ${imposter.word
-            ? `<p class="text-sm text-slate-400">Their word: <span class="text-slate-200 font-semibold">${escapeHtml(imposter.word)}</span></p>`
-            : `<p class="text-sm text-slate-400 italic">They had no word</p>`
+            ? `<p class="text-sm text-slate-500">Imposter's hint: <span class="text-slate-300 italic">${escapeHtml(imposter.word)}</span></p>`
+            : `<p class="text-sm text-slate-500 italic">Imposter had no hint</p>`
           }
         </div>
         ` : ""}
