@@ -8,13 +8,25 @@
  *   npx tsx scripts/seed-packs.ts --reset                # clear DB and reload all packs
  *   npx tsx scripts/seed-packs.ts --reset animals animals2  # clear DB and load specific packs
  *
- * Works against any DATABASE_URL (SQLite file or Neon/Postgres connection string).
+ * For Turso:
+ *   DATABASE_URL=libsql://... DATABASE_AUTH_TOKEN=... npx tsx scripts/seed-packs.ts --reset
  */
 
+import "dotenv/config";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
 import { eq } from "drizzle-orm";
-import { db, schema } from "../src/db/index.js";
+import { setDb, db, schema } from "../src/db/index.js";
+import * as schemaFull from "../src/db/schema.js";
+
+const dbUrl = process.env.DATABASE_URL ?? "file:./data/masquerade.db";
+const authToken = process.env.DATABASE_AUTH_TOKEN;
+const client = createClient({ url: dbUrl, authToken });
+setDb(drizzle(client, { schema: schemaFull }));
+
+console.log(`Connected to: ${dbUrl.startsWith("file:") ? dbUrl : dbUrl.replace(/\/\/.*@/, "//***@")}`);
 
 interface PackFile {
   name: string;
