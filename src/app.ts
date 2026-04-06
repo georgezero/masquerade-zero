@@ -20,4 +20,7 @@ app.get("/debug-env", (c) => {
 app.route("/", gameRouter);
 app.route("/admin", adminRouter);
 
+// Catch-all: return what path Hono sees (for debugging only)
+app.all("*", (c) => c.json({ caught: true, path: c.req.path, method: c.req.method }, 404));
+
 export default app;
