@@ -252,6 +252,24 @@ gameRouter.get("/rooms/:pin", async (c) => {
 
 // ── Polling fragments ────────────────────────────────────────────────────────
 
+// Lightweight status check — used by players who haven't submitted yet
+// (so we can't poll game-state without wiping their input).
+// Returns HX-Redirect when game ends; otherwise re-renders itself.
+gameRouter.get("/rooms/:pin/fragment/status", async (c) => {
+  const { pin } = c.req.param();
+  const ctx = await requirePlayerInRoom(c, pin);
+  if (!ctx) return c.text("", 403);
+  const { room } = ctx;
+  if (room.phase === "result" || room.status === "finished") {
+    c.header("HX-Redirect", `/rooms/${pin}`);
+    return c.text("");
+  }
+  return c.html(`<div id="status-poll"
+    hx-get="/rooms/${pin}/fragment/status"
+    hx-trigger="every 2s"
+    hx-swap="outerHTML"></div>`);
+});
+
 gameRouter.get("/rooms/:pin/fragment/lobby", async (c) => {
   const { pin } = c.req.param();
   const ctx = await requirePlayerInRoom(c, pin);

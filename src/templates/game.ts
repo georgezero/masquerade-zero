@@ -327,6 +327,11 @@ export function cluesPage(
         ${cluesFragmentInner(room, players, currentPlayer, speakingOrder, clues, submittedIds, playerMap, hasSubmitted, isHost)}
       </div>
 
+      ${room.mode !== "local" && !hasSubmitted ? `<div id="status-poll"
+        hx-get="/rooms/${escapeHtml(room.pin)}/fragment/status"
+        hx-trigger="every 2s"
+        hx-swap="outerHTML"></div>` : ""}
+
       ${isHost ? exitDialog(room.pin) : ""}
     </div>`,
   });
@@ -429,6 +434,11 @@ export function votingPage(
       <div id="game-state">
         ${votingFragmentInner(room, players, currentPlayer, votes, hasVoted, voteCount, eligible)}
       </div>
+
+      ${room.mode !== "local" && !hasVoted ? `<div id="status-poll"
+        hx-get="/rooms/${escapeHtml(room.pin)}/fragment/status"
+        hx-trigger="every 2s"
+        hx-swap="outerHTML"></div>` : ""}
 
       ${isHost ? exitDialog(room.pin) : ""}
     </div>`,
