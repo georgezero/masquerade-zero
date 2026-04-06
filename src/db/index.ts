@@ -15,16 +15,16 @@ if (env.DATABASE_URL.startsWith("file:")) {
   }
 }
 
-// Vercel serverless requires https:// (HTTP transport) instead of libsql:// (WebSocket)
+// libsql:// uses WebSockets which hang in serverless — use https:// for HTTP transport
 const url = env.DATABASE_URL.startsWith("libsql://")
   ? env.DATABASE_URL.replace("libsql://", "https://")
   : env.DATABASE_URL;
 
 const client = createClient({ url, authToken: env.DATABASE_AUTH_TOKEN });
 
-// Enable WAL mode for concurrent reads during writes (local SQLite only)
+// WAL mode improves concurrent reads on local SQLite — fire and forget, non-blocking
 if (env.DATABASE_URL.startsWith("file:")) {
-  await client.execute("PRAGMA journal_mode=WAL;");
+  client.execute("PRAGMA journal_mode=WAL;").catch(() => {});
 }
 
 export const db = drizzle(client, { schema });
