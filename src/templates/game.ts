@@ -505,6 +505,7 @@ export function resultPage(
 
   return page({
     title: "Result",
+    htmx: true,
     body: `
     <div class="flex min-h-screen flex-col items-center justify-center gap-6 p-4">
       <div class="w-full max-w-sm rounded-2xl border border-slate-700/60 bg-slate-900/60 p-6 text-center space-y-4 backdrop-blur-sm">
@@ -581,6 +582,11 @@ export function resultPage(
         </div>
         ` : ""}
       </div>
+
+      ${room.mode !== "local" && !isHost ? `<div id="result-poll"
+        hx-get="/rooms/${escapeHtml(room.pin)}/fragment/result-wait"
+        hx-trigger="every 2s"
+        hx-swap="outerHTML"></div>` : ""}
     </div>`,
   });
 }

@@ -314,6 +314,22 @@ gameRouter.get("/rooms/:pin/fragment/state", async (c) => {
   );
 });
 
+// Polls until result phase ends (host starts next round or play again)
+gameRouter.get("/rooms/:pin/fragment/result-wait", async (c) => {
+  const { pin } = c.req.param();
+  const ctx = await requirePlayerInRoom(c, pin);
+  if (!ctx) return c.text("", 403);
+  const { room } = ctx;
+  if (room.phase !== "result") {
+    c.header("HX-Redirect", `/rooms/${pin}`);
+    return c.text("");
+  }
+  return c.html(`<div id="result-poll"
+    hx-get="/rooms/${pin}/fragment/result-wait"
+    hx-trigger="every 2s"
+    hx-swap="outerHTML"></div>`);
+});
+
 // Polls until reveal phase ends; sends HX-Redirect when game moves on
 gameRouter.get("/rooms/:pin/fragment/reveal-wait", async (c) => {
   const { pin } = c.req.param();
