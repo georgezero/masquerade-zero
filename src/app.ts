@@ -11,6 +11,14 @@ const app = new Hono();
 
 app.use(trimTrailingSlash());
 
+app.get("/debug-env", (c) => {
+  return c.json({
+    db_url: env.DATABASE_URL,
+    has_auth_token: !!env.DATABASE_AUTH_TOKEN,
+    node_env: env.NODE_ENV,
+  });
+});
+
 app.get("/debug-db", async (c) => {
   try {
     await db.run(sql`SELECT 1`);
