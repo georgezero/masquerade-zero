@@ -1,19 +1,10 @@
 import { handle } from "hono/vercel";
-import { createClient } from "@libsql/client/http";
-import { drizzle } from "drizzle-orm/libsql";
+import { Hono } from "hono";
 
-import { env } from "../src/env.js";
-import { setDb } from "../src/db/index.js";
-import * as schema from "../src/db/schema.js";
-import app from "../src/app.js";
-
-// Use https:// for HTTP transport — libsql:// uses WebSockets which hang in serverless
-const url = env.DATABASE_URL.startsWith("libsql://")
-  ? env.DATABASE_URL.replace("libsql://", "https://")
-  : env.DATABASE_URL;
-
-const client = createClient({ url, authToken: env.DATABASE_AUTH_TOKEN });
-setDb(drizzle(client, { schema }));
+// Minimal test — no app imports, no db, no dotenv
+const testApp = new Hono();
+testApp.get("/ping", (c) => c.json({ ok: true }));
+testApp.get("/", (c) => c.text("hello from vercel"));
 
 export const config = { runtime: "nodejs" };
-export default handle(app);
+export default handle(testApp);
