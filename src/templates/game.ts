@@ -567,10 +567,12 @@ export function resultPage(
               Play Again
             </button>
           </form>
-          <a href="/"
-            class="flex-1 flex items-center justify-center rounded-xl border border-slate-600 bg-slate-800/40 px-4 py-2.5 font-semibold text-slate-400 transition hover:text-slate-200 text-sm">
-            New Game
-          </a>
+          <form method="POST" action="/rooms/${escapeHtml(room.pin)}/new-game" class="flex-1">
+            <button type="submit"
+              class="w-full flex items-center justify-center rounded-xl border border-slate-600 bg-slate-800/40 px-4 py-2.5 font-semibold text-slate-400 transition hover:text-slate-200 text-sm">
+              New Game
+            </button>
+          </form>
         </div>
         ` : gameOver && !isHost ? `
         <div class="space-y-2 pt-2">

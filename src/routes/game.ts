@@ -314,14 +314,17 @@ gameRouter.get("/rooms/:pin/fragment/state", async (c) => {
   );
 });
 
-// Polls until result phase ends (host starts next round or play again)
+// Polls until result phase ends (host starts next round, play again, or new game)
 gameRouter.get("/rooms/:pin/fragment/result-wait", async (c) => {
   const { pin } = c.req.param();
   const ctx = await requirePlayerInRoom(c, pin);
   if (!ctx) return c.text("", 403);
   const { room } = ctx;
   if (room.phase !== "result") {
-    c.header("HX-Redirect", `/rooms/${pin}`);
+    // status=finished + phase=lobby means host clicked New Game → go home
+    // otherwise host started next round or play again → go to room
+    const dest = (room.status === "finished") ? "/" : `/rooms/${pin}`;
+    c.header("HX-Redirect", dest);
     return c.text("");
   }
   return c.html(`<div id="result-poll"
@@ -742,6 +745,24 @@ gameRouter.post("/rooms/:pin/exit", async (c) => {
     .where(eq(schema.gameRooms.id, room.id));
 
   return c.redirect(`/rooms/${pin}`);
+});
+
+// ── New game (end session, send everyone home) ────────────────────────────────
+
+gameRouter.post("/rooms/:pin/new-game", async (c) => {
+  const { pin } = c.req.param();
+  const ctx = await requirePlayerInRoom(c, pin);
+  if (!ctx) return c.redirect("/");
+
+  const { room } = ctx;
+  if (room.status !== "finished") return c.redirect(`/rooms/${pin}`);
+
+  // Move phase away from "result" so result-poll redirects non-hosts to "/"
+  await db.update(schema.gameRooms)
+    .set({ phase: "lobby", updatedAt: new Date().toISOString() })
+    .where(eq(schema.gameRooms.id, room.id));
+
+  return c.redirect("/");
 });
 
 // ── Play again (same players) ─────────────────────────────────────────────────
