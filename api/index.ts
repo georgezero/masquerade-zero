@@ -1,10 +1,19 @@
 import { handle } from "hono/vercel";
-import { Hono } from "hono";
+import { createClient } from "@libsql/client/web";
+import { drizzle } from "drizzle-orm/libsql";
 
-// Minimal test — no app imports, no db, no dotenv
-const testApp = new Hono();
-testApp.get("/ping", (c) => c.json({ ok: true }));
-testApp.get("/", (c) => c.text("hello from vercel"));
+import { env } from "../src/env.js";
+import { setDb } from "../src/db/index.js";
+import * as schema from "../src/db/schema.js";
+import app from "../src/app.js";
 
-export const config = { runtime: "nodejs" };
-export default handle(testApp);
+// Use wss:// for WebSocket or https:// for HTTP transport
+const url = env.DATABASE_URL.startsWith("libsql://")
+  ? env.DATABASE_URL.replace("libsql://", "https://")
+  : env.DATABASE_URL;
+
+const client = createClient({ url, authToken: env.DATABASE_AUTH_TOKEN });
+setDb(drizzle(client, { schema }));
+
+export const config = { runtime: "edge" };
+export default handle(app);

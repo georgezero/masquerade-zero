@@ -1,4 +1,5 @@
-import "dotenv/config";
+// dotenv is loaded by src/index.ts (RPI/Node.js entry only).
+// On Vercel, env vars are injected into process.env automatically.
 import { z } from "zod";
 
 const schema = z.object({
