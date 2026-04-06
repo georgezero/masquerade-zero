@@ -50,24 +50,26 @@ export function landingPage() {
           </div>
         </div>
         <p class="text-slate-400 text-sm max-w-xs mx-auto">
-          A social deduction game of cunning, bluffing, and masks. 3–8 players.
+          Game of cunning, bluffing, and masks<br/>3–8 players
         </p>
       </div>
 
       <div class="flex flex-col gap-3 w-full max-w-xs">
         <form method="POST" action="/rooms">
-          <input type="hidden" name="mode" value="online" />
+          <input type="hidden" name="mode" value="local" />
           <button type="submit"
             class="w-full rounded-xl border border-amber-300/60 bg-amber-400/20 px-6 py-3 font-bold text-amber-100 shadow-[0_0_18px_rgba(251,191,36,0.25)] transition hover:bg-amber-400/30">
-            Create a Room — Online
+            Create a Room — Pass &amp; Play
           </button>
         </form>
 
+        <div class="pt-1"></div>
+
         <form method="POST" action="/rooms">
-          <input type="hidden" name="mode" value="local" />
+          <input type="hidden" name="mode" value="online" />
           <button type="submit"
             class="w-full rounded-xl border border-slate-600 bg-slate-800/40 px-6 py-3 font-bold text-slate-200 transition hover:bg-slate-700/60">
-            Create a Room — Pass &amp; Play
+            Create a Room — Online
           </button>
         </form>
 
