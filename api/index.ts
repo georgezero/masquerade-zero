@@ -15,5 +15,5 @@ const url = env.DATABASE_URL.startsWith("libsql://")
 const client = createClient({ url, authToken: env.DATABASE_AUTH_TOKEN });
 setDb(drizzle(client, { schema }));
 
-export const config = { runtime: "nodejs" };
+export const config = { runtime: "edge" };
 export default handle(app);
