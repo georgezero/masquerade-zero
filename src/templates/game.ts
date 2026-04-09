@@ -271,7 +271,7 @@ export function revealPage(player: Player, room: GameRoom, subject: string | nul
         </button>
       </form>
 
-      ${player.isHost ? exitDialog(room.pin) : ""}
+      ${(player.isHost || room.mode === "local") ? exitDialog(room.pin) : ""}
     </div>`,
   });
 }
